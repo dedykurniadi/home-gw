@@ -64,15 +64,7 @@ func validID(id string) bool {
 	return true
 }
 
-// Open memakai penyimpanan file di dir (satu file per perangkat). Lihat OpenStore.
-func Open(dir string, now func() time.Time) (*Log, error) {
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		return nil, err
-	}
-	return OpenStore(fs, now)
-}
-
+// Open memakai penyimpanan SQLite. Lihat OpenStore.
 // OpenStore memuat riwayat dari st. now boleh nil (waktu nyata). Perangkat yang terakhir tercatat
 // ON/OFF diberi kejadian "gap" pada waktu terakhir dashboard hidup (penanda alive), karena selama
 // dashboard mati statusnya tidak diketahui.
@@ -97,6 +89,7 @@ func OpenStore(st Store, now func() time.Time) (*Log, error) {
 			}
 		}
 	}
+	l.enableSrc()
 	return l, nil
 }
 

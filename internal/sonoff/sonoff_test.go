@@ -10,8 +10,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"owrt-dashboard/internal/mdnslog"
 )
 
 const key = "d9a0069e-cc32-46f7-bab4-c2c4e9cd6a3f"
@@ -215,31 +213,6 @@ func TestHeartbeatSameSeqForwarded(t *testing.T) {
 	m.handleTXT(kv, nil) // balasan query 30 detik kemudian, seq sama: heartbeat
 	if n != 2 {
 		t.Fatalf("heartbeat harus diteruskan, dapat %d", n)
-	}
-}
-
-func TestOnPacketLogsEverything(t *testing.T) {
-	iv, data, _ := encrypt(key, []byte(`{"switch":"on","rssi":-61}`))
-	m := NewManager([]Device{{ID: "1000c47454", Name: "Teras", Key: key, MAC: "aa"}}, nil)
-	var got []mdnslog.Packet
-	m.OnPacket = func(p mdnslog.Packet) { got = append(got, p) }
-	kv := map[string]string{"id": "1000c47454", "encrypt": "true", "iv": iv, "data1": data, "seq": "366"}
-	m.handleTXT(kv, net.ParseIP("10.142.27.206"))
-	m.handleTXT(kv, net.ParseIP("10.142.27.206")) // kembar
-	m.handleTXT(map[string]string{"id": "1000c47454", "encrypt": "true", "iv": iv, "data1": "AAAA", "seq": "367"}, nil)
-	m.handleTXT(map[string]string{"id": "tidakdikenal", "seq": "1"}, nil) // bukan perangkat kita: tidak dicatat
-	if len(got) != 3 {
-		t.Fatalf("harus 3 paket, dapat %d: %+v", len(got), got)
-	}
-	a, b, c := got[0], got[1], got[2]
-	if a.Seq != "366" || a.Dup || a.Sw != "on" || a.IP != "10.142.27.206" || a.Dec != "ok" || a.RSSI == nil || *a.RSSI != -61 {
-		t.Fatalf("paket 1: %+v", a)
-	}
-	if !b.Dup || b.Seq != "366" {
-		t.Fatalf("paket 2 harus dup: %+v", b)
-	}
-	if c.Dec != "fail" || c.Seq != "367" {
-		t.Fatalf("paket 3 harus gagal dekripsi: %+v", c)
 	}
 }
 

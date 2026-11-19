@@ -1,16 +1,12 @@
 package onoff
 
 import (
-	"bufio"
-	"fmt"
 	"log"
-	"os"
-	"strconv"
 	"strings"
 )
 
-// Sumber perubahan ON/OFF. Perintah dari dashboard/app/scene dicatat terpisah (file teks kecil) dan
-// digabung saat riwayat dibaca, jadi skema penyimpanan ON/OFF (file/SQLite) tidak berubah.
+// Sumber perubahan ON/OFF. Perintah dari dashboard/app/scene dicatat terpisah di penyimpanan dan
+// digabung saat riwayat dibaca, jadi skema ON/OFF tidak berubah.
 // Perubahan ON/OFF tanpa perintah terdekat dianggap dari perangkat (tombol fisik/eWeLink/lainnya).
 const (
 	SrcDevice = "Perangkat"
@@ -32,43 +28,36 @@ type HEvent struct {
 }
 
 type srcLog struct {
-	path  string
+	st    SrcStore
 	start int64 // awal pencatatan sumber; kejadian sebelumnya tidak diberi sumber
 	cmds  map[string][]cmdRec
 }
 
-// SetSrcFile mengaktifkan pencatatan sumber ke file path (dibuat bila belum ada).
-func (l *Log) SetSrcFile(path string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	s := &srcLog{path: path, cmds: map[string][]cmdRec{}}
-	cut := l.now().Unix() - srcKeep
-	if fh, err := os.Open(path); err == nil {
-		sc := bufio.NewScanner(fh)
-		for sc.Scan() {
-			f := strings.SplitN(sc.Text(), "\t", 3)
-			if len(f) < 3 {
-				continue
-			}
-			t, err := strconv.ParseInt(f[0], 10, 64)
-			if err != nil {
-				continue
-			}
-			if f[1] == "#" {
-				s.start = t
-				continue
-			}
-			if t >= cut && validID(f[1]) {
-				s.cmds[f[1]] = append(s.cmds[f[1]], cmdRec{t, f[2]})
-			}
-		}
-		fh.Close()
+// enableSrc mengaktifkan pencatatan sumber bila penyimpanan mendukungnya.
+func (l *Log) enableSrc() {
+	ss, ok := l.store.(SrcStore)
+	if !ok {
+		return
 	}
+	s := &srcLog{st: ss, cmds: map[string][]cmdRec{}}
+	start, err := ss.SrcStart()
+	if err != nil {
+		log.Printf("onoff: gagal membaca awal pencatatan sumber: %v", err)
+	}
+	recs, err := ss.LoadSrc(l.now().Unix() - srcKeep)
+	if err != nil {
+		log.Printf("onoff: gagal memuat sumber: %v", err)
+	}
+	for _, r := range recs {
+		if validID(r.ID) {
+			s.cmds[r.ID] = append(s.cmds[r.ID], cmdRec{r.T, r.Src})
+		}
+	}
+	s.start = start
 	if s.start == 0 {
 		s.start = l.now().Unix()
-		if fh, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
-			fmt.Fprintf(fh, "%d\t#\tstart\n", s.start)
-			fh.Close()
+		if err := ss.SetSrcStart(s.start); err != nil {
+			log.Printf("onoff: gagal menyimpan awal pencatatan sumber: %v", err)
 		}
 	}
 	l.src = s
@@ -89,13 +78,9 @@ func (l *Log) NoteCmd(id, src string) {
 		c = append([]cmdRec(nil), c[len(c)-srcMax*3/4:]...)
 	}
 	s.cmds[id] = c
-	fh, err := os.OpenFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
+	if err := s.st.AppendSrc(SrcRec{T: t, ID: id, Src: src}); err != nil {
 		log.Printf("onoff: gagal mencatat sumber: %v", err)
-		return
 	}
-	fmt.Fprintf(fh, "%d\t%s\t%s\n", t, id, src)
-	fh.Close()
 }
 
 // sourceOf menentukan sumber kejadian ke-i pada evs (sudah dibersihkan).

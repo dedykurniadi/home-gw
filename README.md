@@ -19,18 +19,15 @@ Frontend ditanam ke dalam binary (`go:embed`), sehingga cukup satu berkas untuk 
 
 ## Build
 
-Build di Mac/PC, bukan di router. Tidak butuh CGO.
+Build di Mac/PC, bukan di router. Tidak butuh CGO. Butuh Go 1.26 atau lebih baru, dan internet saat
+pertama kali mengunduh driver SQLite (`modernc.org/sqlite`, murni Go).
 
 ```sh
-# Penuh (tanpa SQLite)
+# Penuh
 GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -ldflags "-s -w" -o dashboard-armv7 .
 
-# Hanya IoT (tanpa SQLite)
+# Hanya IoT
 ./build-iot.sh
-
-# Dengan SQLite: butuh internet untuk mengunduh modernc.org/sqlite
-./build-full-sqlite.sh
-./build-iot-sqlite.sh
 ```
 
 Uji:
@@ -38,7 +35,6 @@ Uji:
 ```sh
 go vet ./...
 go test ./...
-go test -tags sqlite ./internal/sqlstore   # opsional
 ```
 
 ## Deploy
@@ -60,11 +56,11 @@ Jalankan manual:
 
 ```sh
 ./dashboard -config config.json
-./dashboard -config config.json -import-csv /opt/dashboard/data          # gabungkan CSV lama ke SQLite, lalu keluar
-./dashboard -config config.json -import-csv /opt/dashboard/data -dry-run # hanya hitung, tidak menulis
 ```
 
-`-import-csv` butuh `"storage": "sqlite"` dan binary yang dibangun dengan `-tags sqlite`.
+Catatan upgrade: data CSV dari versi lama tidak dibaca lagi. Impor dulu dengan binary versi lama
+(commit `72ac288`, yang masih punya `-import-csv`) sebelum mengganti binary. Versi ini sudah tidak
+menyediakan flag itu.
 
 ## Konfigurasi
 
@@ -84,26 +80,25 @@ Berkas JSON, dibaca lewat `-config`. Nilai yang tidak diisi memakai bawaan.
 | `wifi_events` | `true` | Lihat bagian WiFi di bawah |
 | `no_ping` | `false` | Anggap semua client hidup (tanpa ICMP) |
 | `query_seconds` | `30` | Selang query mDNS ke perangkat Sonoff |
-| `power`, `onoff`, `mdns_log`, `sched` | aktif | Objek opsional; `off: true` menonaktifkan. Berkas default ada di `data/` |
+| `power`, `onoff`, `sched` | aktif | Objek opsional; `off: true` menonaktifkan. `sched` memakai `data/schedules.json` |
 | `location` | - | `{"lat", "lon"}` untuk jadwal terbit dan terbenam |
 | `tariff_per_kwh` | `0` | Tarif (Rp/kWh). Nol berarti biaya tidak ditampilkan |
 | `utc_offset_hours` | zona sistem | Mis. `7` untuk WIB. Dipakai untuk batas "hari ini" dan "bulan ini" |
-| `storage` | `files` | `files` (CSV/teks) atau `sqlite` |
 | `db_path` | `data/dashboard.db` | Lokasi berkas SQLite |
 | `iot_only` | `false` | Mode hanya IoT |
 
-Pengaturan energi (watt, konsumsi standby, catatan) disimpan di SQLite atau `data/energy-cfg.json`. Nilai `watt` dan `standby_watt` di `devices.json` hanya dipakai sebagai isian awal.
+Pengaturan energi (watt, konsumsi standby, catatan) disimpan di SQLite. Nilai `watt` dan `standby_watt` di `devices.json` hanya dipakai sebagai isian awal.
 
 ## Data
 
-Semua data disimpan di `data/` di samping `devices.json`:
+Semua data disimpan di SQLite (`data/dashboard.db` di samping `devices.json`): riwayat ON/OFF,
+sumber perubahannya, log daya (sampel mentah, rekap menit, kejadian), kWh harian terukur,
+pengaturan energi, dan log eksekusi jadwal.
 
-- `energy-daily.csv`: kWh harian dari meter perangkat
-- `schedules.json`: scene dan jadwal
-- `onoff/`: riwayat ON/OFF
-- `mdns/`: paket mDNS mentah harian (default 14 hari)
-- `power/`: log daya per perangkat
-- `dashboard.db`: bila `storage` adalah `sqlite`
+Yang tetap berupa berkas:
+
+- `devices.json`: daftar perangkat Sonoff
+- `data/schedules.json`: scene dan jadwal
 
 ## WiFi
 

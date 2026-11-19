@@ -11,8 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"owrt-dashboard/internal/mdnslog"
 )
 
 const (
@@ -78,10 +76,6 @@ type Manager struct {
 	// OnSwitch dipanggil (tanpa lock) bila status ON/OFF perangkat terdengar, atau "gap" bila
 	// perangkat berhenti terdengar (waktu = terakhir terdengar). Pemanggil menyaring duplikat.
 	OnSwitch func(id string, t time.Time, state string)
-	// OnPacket (opsional) dipanggil (tanpa lock) untuk setiap paket mDNS dari perangkat yang dikenal,
-	// termasuk paket kembar dan yang gagal didekripsi. OnQuery dipanggil tiap query dikirim.
-	OnPacket func(mdnslog.Packet)
-	OnQuery  func(time.Time)
 	// SinceOf (opsional) memberi waktu mulai status sekarang (unix detik, 0 = tidak tahu).
 	SinceOf func(id string) int64
 	// QueryEvery = selang query mDNS; 0 = bawaan 30 detik.
@@ -153,22 +147,11 @@ func num(v any) (float64, bool) {
 // handleTXT memproses satu pengumuman mDNS dari perangkat.
 func (m *Manager) handleTXT(kv map[string]string, src net.IP) {
 	id := kv["id"]
-	rx := time.Now()
 	m.mu.Lock()
 	ds := m.devs[id]
 	if ds == nil {
 		m.mu.Unlock()
 		return
-	}
-	pk := mdnslog.Packet{T: rx, ID: id, Seq: kv["seq"], Dec: "ok",
-		ViaQ: rx.UnixNano()-m.lastQuery.Load() < int64(1500*time.Millisecond)}
-	if src != nil {
-		pk.IP = src.String()
-	}
-	emit := func() {
-		if m.OnPacket != nil {
-			m.OnPacket(pk)
-		}
 	}
 	var sb strings.Builder
 	for i := 1; ; i++ {
@@ -187,8 +170,6 @@ func (m *Manager) handleTXT(kv map[string]string, src net.IP) {
 				log.Printf("sonoff: %s (%s): gagal dekripsi mDNS: %v", ds.Name, id, err)
 			}
 			m.mu.Unlock()
-			pk.Dec = "fail"
-			emit()
 			return
 		}
 		payload = pt
@@ -196,8 +177,6 @@ func (m *Manager) handleTXT(kv map[string]string, src net.IP) {
 	var j map[string]any
 	if json.Unmarshal(payload, &j) != nil {
 		m.mu.Unlock()
-		pk.Dec = "bad"
-		emit()
 		return
 	}
 	if src != nil {
@@ -268,11 +247,6 @@ func (m *Manager) handleTXT(kv map[string]string, src net.IP) {
 		dup = seq == ds.lastSeq
 		ds.lastSeq = seq
 	}
-	pk.Dup, pk.Sw = dup, ds.state
-	if ds.rssi != nil {
-		r := *ds.rssi
-		pk.RSSI = &r
-	}
 	var hook func()
 	// Perangkat hanya mengumumkan saat nilai berubah (3 paket per pengumuman, seq sama). Balasan
 	// query dengan seq lama tetap diteruskan sebagai heartbeat (nilai tidak berubah), tetapi
@@ -294,7 +268,6 @@ func (m *Manager) handleTXT(kv map[string]string, src net.IP) {
 	ds.loggedGap = false
 	swState, swSeen := ds.state, ds.seen
 	m.mu.Unlock()
-	emit()
 	m.notify()
 	if m.OnSwitch != nil && (swState == "on" || swState == "off") {
 		m.OnSwitch(id, swSeen, swState)
@@ -331,9 +304,6 @@ func (m *Manager) checkGaps() {
 func (m *Manager) query(conn *net.UDPConn) {
 	now := time.Now()
 	m.lastQuery.Store(now.UnixNano())
-	if m.OnQuery != nil {
-		m.OnQuery(now)
-	}
 	sendQuery(conn)
 }
 

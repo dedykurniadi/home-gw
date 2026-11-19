@@ -2,10 +2,40 @@ package energy
 
 import (
 	"math"
-	"path/filepath"
 	"testing"
 	"time"
 )
+
+// memDaily: DailyStore tiruan di memori.
+type memDaily struct {
+	m     map[string]map[string]float64
+	saved int
+}
+
+func (s *memDaily) LoadDaily() (map[string]map[string]float64, error) { return s.m, nil }
+
+func (s *memDaily) SaveDaily(id, day string, kwh float64) error {
+	if s.m[id] == nil {
+		s.m[id] = map[string]float64{}
+	}
+	s.m[id][day] = kwh
+	s.saved++
+	return nil
+}
+
+func (s *memDaily) PruneDaily(cut string) error {
+	for id, days := range s.m {
+		for day := range days {
+			if day < cut {
+				delete(days, day)
+			}
+		}
+		if len(days) == 0 {
+			delete(s.m, id)
+		}
+	}
+	return nil
+}
 
 func TestEstimateAndMeasured(t *testing.T) {
 	loc := time.FixedZone("WIB", 7*3600)
@@ -127,8 +157,8 @@ func TestMonthly(t *testing.T) {
 
 func TestDailyPersist(t *testing.T) {
 	loc := time.FixedZone("WIB", 7*3600)
-	p := filepath.Join(t.TempDir(), "d.csv")
-	d, err := OpenDaily(p)
+	st := &memDaily{m: map[string]map[string]float64{}}
+	d, err := OpenDaily(st)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +170,7 @@ func TestDailyPersist(t *testing.T) {
 	if err := d.Flush(now, loc); err != nil {
 		t.Fatal(err)
 	}
-	d2, err := OpenDaily(p)
+	d2, err := OpenDaily(st)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,22 +219,26 @@ func TestCompareWeekStartsMonday(t *testing.T) {
 	}
 }
 
-func TestDailyMergeFrom(t *testing.T) {
-	dir := t.TempDir()
-	a, _ := OpenDaily(dir + "/a.csv")
-	b, _ := OpenDaily(dir + "/b.csv")
-	a.put("p", "2026-11-01", 1)
-	a.put("p", "2026-11-02", 5)
-	b.put("p", "2026-11-02", 3) // lebih kecil: tidak menimpa
-	b.put("p", "2026-11-03", 2) // baru
-	b.put("p", "2026-11-01", 4) // lebih besar: menang
-	if n := a.MergeFrom(b); n != 2 {
-		t.Fatalf("berubah %d", n)
+func TestDailyFlushKeepsMaxAndPrunes(t *testing.T) {
+	loc := time.FixedZone("WIB", 7*3600)
+	st := &memDaily{m: map[string]map[string]float64{}}
+	d, _ := OpenDaily(st)
+	now := time.Date(2026, 11, 3, 10, 0, 0, 0, loc)
+	d.Record("p", now, loc, 4)
+	d.Record("p", now, loc, 2) // lebih kecil: tidak menimpa
+	if err := d.Flush(now, loc); err != nil {
+		t.Fatal(err)
 	}
-	if k, d := a.Range("p", "2026-11-01", "2026-11-03"); d != 3 || k != 4+5+2 {
-		t.Fatalf("hasil %v %v", k, d)
+	if k, days := d.Range("p", "2026-11-01", "2026-11-30"); days != 1 || k != 4 {
+		t.Fatalf("hasil %v %v", k, days)
 	}
-	if n := a.MergeFrom(b); n != 0 {
-		t.Fatalf("tidak idempotent %d", n)
+	if st.saved != 1 {
+		t.Fatalf("hanya baris berubah yang disimpan, dapat %d", st.saved)
+	}
+	if err := d.Flush(now, loc); err != nil { // tidak ada perubahan: tidak menulis ulang
+		t.Fatal(err)
+	}
+	if st.saved != 1 {
+		t.Fatalf("flush tanpa perubahan harus tidak menulis, dapat %d", st.saved)
 	}
 }

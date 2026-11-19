@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -28,9 +27,8 @@ const (
 )
 
 type Config struct {
-	Dir   string // folder file CSV (dipakai bila Store kosong)
-	Store Store  // penyimpanan (file CSV bawaan, atau SQLite); nil = file di Dir
-	// NewStore (opsional): dipakai OpenAll untuk membuat Store per perangkat (mis. SQLite). Menimpa Store.
+	Store Store // penyimpanan (wajib)
+	// NewStore (opsional): dipakai OpenAll untuk membuat Store per perangkat. Menimpa Store.
 	NewStore     func(id string) (Store, error)
 	CompOnW      float64       // daya di atas ini (bertahan Debounce) = kompresor ON. Default 300
 	IdleW        float64       // daya di bawah ini (relay hidup) = AC mati/standby, bukan fan. Default 2
@@ -156,18 +154,13 @@ type Logger struct {
 	lastPrune string
 }
 
-// Open membuka (dan memuat) log di cfg.Dir.
+// Open membuka (dan memuat) log dari cfg.Store.
 func Open(id string, cfg Config) (*Logger, error) {
 	cfg.setDefaults()
-	st := cfg.Store
-	if st == nil {
-		fs, err := NewFileStore(cfg.Dir)
-		if err != nil {
-			return nil, err
-		}
-		st = fs
+	if cfg.Store == nil {
+		return nil, fmt.Errorf("powerlog %s: Store wajib diisi", id)
 	}
-	l := &Logger{id: id, cfg: cfg, store: st}
+	l := &Logger{id: id, cfg: cfg, store: cfg.Store}
 	l.load()
 	l.prune()
 	return l, nil
@@ -687,19 +680,19 @@ type Registry struct {
 	order    []string
 }
 
-// OpenAll membuka satu Logger per id di <base>/<id>.
-func OpenAll(ids []string, base string, cfg Config) (*Registry, error) {
+// OpenAll membuka satu Logger per id dengan Store dari cfg.NewStore.
+func OpenAll(ids []string, cfg Config) (*Registry, error) {
 	r := &Registry{loggers: map[string]*Logger{}}
 	for _, id := range ids {
 		c := cfg
-		c.Dir = filepath.Join(base, id)
-		if cfg.NewStore != nil {
-			st, err := cfg.NewStore(id)
-			if err != nil {
-				return nil, fmt.Errorf("powerlog %s: %w", id, err)
-			}
-			c.Store = st
+		if cfg.NewStore == nil {
+			return nil, fmt.Errorf("powerlog %s: NewStore wajib diisi", id)
 		}
+		st, err := cfg.NewStore(id)
+		if err != nil {
+			return nil, fmt.Errorf("powerlog %s: %w", id, err)
+		}
+		c.Store = st
 		l, err := Open(id, c)
 		if err != nil {
 			return nil, fmt.Errorf("powerlog %s: %w", id, err)

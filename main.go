@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"owrt-dashboard/internal/energy"
-	"owrt-dashboard/internal/mdnslog"
 	"owrt-dashboard/internal/netdata"
 	"owrt-dashboard/internal/onoff"
 	"owrt-dashboard/internal/powerlog"
@@ -45,7 +44,6 @@ type config struct {
 	QuerySeconds int                  `json:"query_seconds"` // selang query mDNS ke perangkat Sonoff (0 = 30)
 	Power        powerCfg             `json:"power"`
 	OnOff        onoffCfg             `json:"onoff"`
-	MDNSLog      mdnsLogCfg           `json:"mdns_log"`
 	Sched        schedCfg             `json:"sched"`
 	// Location: koordinat rumah, hanya dipakai untuk jadwal terbit/terbenam matahari.
 	Location *struct {
@@ -60,10 +58,6 @@ type config struct {
 	// UTCOffsetHours: zona waktu untuk batas "hari ini"/"bulan ini" (mis. 7 untuk WIB).
 	// Kosong = zona waktu sistem (di OpenWrt bisa jatuh ke UTC bila TZ tidak terbaca).
 	UTCOffsetHours *float64 `json:"utc_offset_hours"`
-	// Storage: "files" (bawaan: CSV/teks) atau "sqlite" (satu berkas; perlu binary dibangun dengan -tags sqlite).
-	// Data file lama diimpor otomatis sekali saat pertama memakai sqlite. Bila SQLite gagal dibuka,
-	// dashboard tetap jalan memakai file.
-	Storage string `json:"storage"`
 	// DBPath: lokasi berkas SQLite; kosong = <folder devices_file>/data/dashboard.db
 	DBPath string `json:"db_path"`
 }
@@ -76,22 +70,13 @@ type schedCfg struct {
 
 // onoffCfg mengatur riwayat ON/OFF perangkat (opsional).
 type onoffCfg struct {
-	Off bool   `json:"off"`
-	Dir string `json:"dir"` // kosong = <folder devices_file>/data/onoff
-}
-
-// mdnsLogCfg mengatur catatan paket mDNS mentah (CSV harian, untuk analisis gap/seq). Bawaan: aktif.
-type mdnsLogCfg struct {
-	Off  bool   `json:"off"`
-	Dir  string `json:"dir"`  // kosong = <folder devices_file>/data/mdns
-	Days int    `json:"days"` // lama file disimpan; 0 = 14
+	Off bool `json:"off"`
 }
 
 // powerCfg mengatur log daya (hanya dari update mDNS). Semua opsional.
 type powerCfg struct {
 	Off          bool     `json:"off"`
 	Devices      []string `json:"devices"` // id perangkat; kosong = semua perangkat kind "switches"
-	Dir          string   `json:"dir"`     // kosong = <folder devices_file>/data/power
 	IdleW        float64  `json:"idle_w"`  // di bawah ini (relay hidup) = AC mati/standby; default 2
 	CompOnW      float64  `json:"comp_on_w"`
 	CompOffW     float64  `json:"comp_off_w"`
@@ -130,8 +115,6 @@ var buildMode string
 
 func main() {
 	cfgPath := flag.String("config", "config.json", "file konfigurasi")
-	importDir := flag.String("import-csv", "", "gabungkan data CSV lama (folder data, mis. /opt/dashboard/data) ke SQLite lalu keluar; butuh storage=sqlite")
-	dryRun := flag.Bool("dry-run", false, "dengan -import-csv: hanya hitung, tidak menulis")
 	flag.Parse()
 
 	cfg := config{Listen: ":8080", LANIface: "br-lan", PollSeconds: 5, SweepSeconds: 60, DevicesFile: "devices.json"}
@@ -189,51 +172,21 @@ func main() {
 	mgr.QueryEvery = time.Duration(cfg.QuerySeconds) * time.Second
 	hub := web.NewHub()
 
-	var sdb *sqlstore.DB
-	if cfg.Storage == "sqlite" {
-		path := cfg.DBPath
-		if path == "" {
-			path = filepath.Join(filepath.Dir(cfg.DevicesFile), "data", "dashboard.db")
-		}
-		var err error
-		if sdb, err = sqlstore.Open(path); err != nil {
-			log.Printf("SQLite tidak dipakai, kembali ke file: %v", err)
-			sdb = nil
-		} else {
-			log.Printf("penyimpanan: SQLite di %s", path)
-		}
-	} else if cfg.Storage != "" && cfg.Storage != "files" {
-		log.Printf("storage %q tidak dikenal, memakai file", cfg.Storage)
+	dbPath := cfg.DBPath
+	if dbPath == "" {
+		dbPath = filepath.Join(filepath.Dir(cfg.DevicesFile), "data", "dashboard.db")
 	}
-
-	if *importDir != "" {
-		if sdb == nil {
-			log.Fatal("-import-csv butuh \"storage\":\"sqlite\" di config dan binary yang dibangun dengan -tags sqlite")
-		}
-		dst := filepath.Join(filepath.Dir(cfg.DevicesFile), "data", "energy-daily.csv")
-		code := runImport(sdb, *importDir, dst, *dryRun)
-		sdb.Close()
-		os.Exit(code)
+	sdb, err := sqlstore.Open(dbPath)
+	if err != nil {
+		log.Fatalf("SQLite %s: %v", dbPath, err)
 	}
+	log.Printf("penyimpanan: SQLite di %s", dbPath)
 
 	// riwayat ON/OFF semua perangkat (kecil: hanya perubahan yang disimpan)
 	var olog *onoff.Log
 	if !cfg.OnOff.Off {
-		dir := cfg.OnOff.Dir
-		if dir == "" {
-			dir = filepath.Join(filepath.Dir(cfg.DevicesFile), "data", "onoff")
-		}
 		var err error
-		if sdb != nil {
-			if fs, ferr := onoff.NewFileStore(dir); ferr == nil {
-				if merr := sdb.MigrateOnOff(fs); merr != nil {
-					log.Printf("impor riwayat ON/OFF lama gagal: %v", merr)
-				}
-			}
-			olog, err = onoff.OpenStore(sdb.OnOff(), nil)
-		} else {
-			olog, err = onoff.Open(dir, nil)
-		}
+		olog, err = onoff.OpenStore(sdb.OnOff(), nil)
 		if err != nil {
 			log.Printf("riwayat ON/OFF nonaktif: %v", err)
 			olog = nil
@@ -243,24 +196,7 @@ func main() {
 				t, _ := olog.Since(id)
 				return t
 			}
-			olog.SetSrcFile(filepath.Join(dir, "src.txt"))
 			olog.Touch()
-		}
-	}
-
-	// paket mDNS mentah semua perangkat Sonoff (seq, IP, via query) ke CSV harian
-	if !cfg.MDNSLog.Off {
-		dir := cfg.MDNSLog.Dir
-		if dir == "" {
-			dir = filepath.Join(filepath.Dir(cfg.DevicesFile), "data", "mdns")
-		}
-		if ml, err := mdnslog.Open(dir, cfg.MDNSLog.Days, loc); err != nil {
-			log.Printf("catatan mDNS mentah nonaktif: %v", err)
-		} else {
-			mgr.OnPacket = ml.Packet
-			mgr.OnQuery = ml.Query
-			defer ml.Close()
-			log.Printf("catatan mDNS mentah di %s", dir)
 		}
 	}
 
@@ -276,28 +212,12 @@ func main() {
 		}
 		if len(ids) > 0 {
 			pc := cfg.Power
-			dir := pc.Dir
-			if dir == "" {
-				dir = filepath.Join(filepath.Dir(cfg.DevicesFile), "data", "power")
-			}
 			var err error
-			var newStore func(id string) (powerlog.Store, error)
-			if sdb != nil {
-				newStore = func(id string) (powerlog.Store, error) {
-					fs, err := powerlog.NewFileStore(filepath.Join(dir, id))
-					if err != nil {
-						return nil, err
-					}
-					if err := sdb.MigratePower(id, fs); err != nil {
-						log.Printf("impor log daya %s gagal, memakai file: %v", id, err)
-						return fs, nil
-					}
+			plog, err = powerlog.OpenAll(ids, powerlog.Config{
+				NewStore: func(id string) (powerlog.Store, error) {
 					return sdb.Power(id), nil
-				}
-			}
-			plog, err = powerlog.OpenAll(ids, dir, powerlog.Config{
-				NewStore: newStore,
-				IdleW:    pc.IdleW, CompOnW: pc.CompOnW, CompOffW: pc.CompOffW,
+				},
+				IdleW: pc.IdleW, CompOnW: pc.CompOnW, CompOffW: pc.CompOffW,
 				Debounce:     time.Duration(pc.DebounceS) * time.Second,
 				Gap:          time.Duration(pc.GapS) * time.Second,
 				RawDays:      pc.RawDays,
@@ -309,7 +229,7 @@ func main() {
 			} else {
 				plog.OnUpdate = func(l map[string]powerlog.Live) { hub.Publish("power", l) }
 				mgr.OnPower = plog.Record
-				log.Printf("log daya aktif untuk %v di %s", ids, dir)
+				log.Printf("log daya aktif untuk %v", ids)
 			}
 		}
 	}
@@ -322,14 +242,9 @@ func main() {
 	if !cfg.IoTOnly {
 		netFn = func() any { return col.Snapshot() }
 	}
-	// pengaturan estimasi energi: SQLite bila ada, jika tidak file JSON. Nilai watt/standby_watt di devices.json
+	// pengaturan estimasi energi di SQLite. Nilai watt/standby_watt di devices.json
 	// hanya menjadi isian awal (diimpor sekali); sesudahnya diubah dari tab Detail.
-	var ecStore energy.CfgStore
-	if sdb != nil {
-		ecStore = sdb.EnergyCfg()
-	} else {
-		ecStore = energy.NewFileCfg(filepath.Join(filepath.Dir(cfg.DevicesFile), "data", "energy-cfg.json"))
-	}
+	ecStore := sdb.EnergyCfg()
 	seed := map[string]energy.Cfg{}
 	for _, d := range devs {
 		seed[d.ID] = energy.Cfg{Watt: d.Watt, StandbyW: d.StandbyW}
@@ -364,10 +279,9 @@ func main() {
 	// catatan kWh harian dari meter perangkat (POWR) untuk rekap bulanan
 	var daily *energy.Daily
 	{
-		dpath := filepath.Join(filepath.Dir(cfg.DevicesFile), "data", "energy-daily.csv")
 		var err error
-		if daily, err = energy.OpenDaily(dpath); err != nil {
-			log.Printf("energi harian %s: %v", dpath, err)
+		if daily, err = energy.OpenDaily(sdb.EnergyDaily()); err != nil {
+			log.Printf("energi harian: %v", err)
 		}
 	}
 	var sch *sched.Engine
@@ -396,9 +310,7 @@ func main() {
 		if olog != nil {
 			sch.SetNote(func(id, scene string) { olog.NoteCmd(id, "Scene: "+scene) })
 		}
-		if sdb != nil {
-			sch.SetStore(sdb.SchedLog()) // log eksekusi scene disimpan di DB (tahan restart)
-		}
+		sch.SetStore(sdb.SchedLog()) // log eksekusi scene disimpan di DB (tahan restart)
 	}
 	var schH http.Handler
 	if sch != nil {
@@ -596,7 +508,5 @@ func main() {
 	if olog != nil {
 		olog.Touch()
 	}
-	if sdb != nil {
-		sdb.Close()
-	}
+	sdb.Close()
 }

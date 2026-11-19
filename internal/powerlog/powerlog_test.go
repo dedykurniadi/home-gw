@@ -2,8 +2,6 @@ package powerlog
 
 import (
 	"math"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -16,9 +14,17 @@ type clock struct{ t time.Time }
 
 func (c *clock) now() time.Time { return c.t }
 
+var stores = map[string]*memStore{}
+
+// newLogger memakai satu memStore per "dir" agar test restart membaca data yang sama.
 func newLogger(t *testing.T, dir string, c *clock) *Logger {
 	t.Helper()
-	l, err := Open("ac", Config{Dir: dir, Now: c.now})
+	st := stores[dir]
+	if st == nil {
+		st = newMemStore()
+		stores[dir] = st
+	}
+	l, err := Open("ac", Config{Store: st, Now: c.now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,14 +170,17 @@ func TestPersistAndReload(t *testing.T) {
 	if err := l.Flush(); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{"events.csv", "raw-20261102.csv", "min-202611.csv"} {
-		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
-			t.Fatalf("file %s tidak ada: %v", f, err)
-		}
+	st := stores[dir]
+	if len(st.raw) == 0 || len(st.events) == 0 || len(st.mins) == 0 {
+		t.Fatalf("data tertunda belum disimpan: raw=%d events=%d mins=%d", len(st.raw), len(st.events), len(st.mins))
 	}
-	raw, _ := os.ReadFile(filepath.Join(dir, "raw-20261102.csv"))
-	if !strings.Contains(string(raw), ",on,q\n") || !strings.Contains(string(raw), ",on,p\n") {
-		t.Fatalf("kolom sumber p/q hilang:\n%s", raw)
+	var gotP, gotQ bool
+	for _, r := range st.raw {
+		gotP = gotP || r.Src == "p"
+		gotQ = gotQ || r.Src == "q"
+	}
+	if !gotP || !gotQ {
+		t.Fatalf("kolom sumber p/q hilang: %+v", st.raw)
 	}
 
 	l2 := newLogger(t, dir, c)
@@ -236,18 +245,22 @@ func TestIgnoresUnsetClock(t *testing.T) {
 	}
 }
 
-func TestPruneOldFiles(t *testing.T) {
+func TestPruneCutsByRetention(t *testing.T) {
 	dir := t.TempDir()
-	for _, f := range []string{"raw-20261020.csv", "raw-20261101.csv", "min-202301.csv", "min-202610.csv", "events.csv"} {
-		os.WriteFile(filepath.Join(dir, f), []byte("x\n"), 0o644)
+	c := &clock{at(0)} // 2026-11-02
+	l := newLogger(t, dir, c)
+	st := stores[dir]
+	if st.pruned == 0 {
+		t.Fatal("Prune harus dipanggil saat Open")
 	}
-	c := &clock{at(0)}
-	newLogger(t, dir, c)
-	for f, want := range map[string]bool{"raw-20261020.csv": false, "raw-20261101.csv": true, "min-202301.csv": false, "min-202610.csv": true, "events.csv": true} {
-		_, err := os.Stat(filepath.Join(dir, f))
-		if (err == nil) != want {
-			t.Fatalf("%s ada=%v diharapkan %v", f, err == nil, want)
-		}
+	if l.cfg.RawDays != 3 || l.cfg.MinuteMonths != 24 {
+		t.Fatalf("bawaan masa simpan: %+v", l.cfg)
+	}
+	if !st.lastRawBefore.Equal(at(0).AddDate(0, 0, -3)) {
+		t.Fatalf("batas sampel mentah: %v", st.lastRawBefore)
+	}
+	if !st.lastMinBefore.Equal(at(0).AddDate(0, -24, 0)) {
+		t.Fatalf("batas rekap menit: %v", st.lastMinBefore)
 	}
 }
 
@@ -275,6 +288,8 @@ type memStore struct {
 	mins   map[int64]MinRow
 	events map[int64]Event
 	pruned int
+
+	lastRawBefore, lastMinBefore time.Time
 }
 
 func newMemStore() *memStore {
@@ -319,7 +334,11 @@ func (m *memStore) LastRaw() (RawRow, bool, error) {
 	}
 	return m.raw[len(m.raw)-1], true, nil
 }
-func (m *memStore) Prune(a, b time.Time) error { m.pruned++; return nil }
+func (m *memStore) Prune(a, b time.Time) error {
+	m.pruned++
+	m.lastRawBefore, m.lastMinBefore = a, b
+	return nil
+}
 
 func TestStoreInterfaceRoundTrip(t *testing.T) {
 	st := newMemStore()

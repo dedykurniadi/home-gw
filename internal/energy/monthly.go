@@ -1,12 +1,7 @@
 package energy
 
 import (
-	"bufio"
 	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -99,42 +94,32 @@ func Monthly(devs []Dev, secs Seconds, daily DailyKWh, meter Meter, tariff float
 	return rep
 }
 
-/* ---------------- catatan harian kWh terukur (POWR) ---------------- */
-
 const dailyKeepDays = 400
+
+// DailyStore menyimpan kWh harian terukur per perangkat.
+type DailyStore interface {
+	LoadDaily() (map[string]map[string]float64, error) // id -> "YYYY-MM-DD" -> kWh
+	SaveDaily(id, day string, kwh float64) error
+	PruneDaily(cut string) error // hapus hari < cut ("YYYY-MM-DD")
+}
 
 // Daily menyimpan kWh harian dari meter perangkat (nilai tertinggi yang terlihat per hari),
 // karena perangkat sendiri hanya melaporkan "hari ini" dan "bulan ini".
 type Daily struct {
-	path  string
+	st    DailyStore
 	mu    sync.Mutex
 	m     map[string]map[string]float64 // id -> "YYYY-MM-DD" -> kWh
-	dirty bool
+	dirty map[string]map[string]bool    // id -> hari -> perlu disimpan
 }
 
-// OpenDaily memuat catatan dari path (belum ada = kosong).
-func OpenDaily(path string) (*Daily, error) {
-	d := &Daily{path: path, m: map[string]map[string]float64{}}
-	f, err := os.Open(path)
-	if os.IsNotExist(err) {
-		return d, nil
-	}
+// OpenDaily memuat catatan dari st.
+func OpenDaily(st DailyStore) (*Daily, error) {
+	d := &Daily{st: st, m: map[string]map[string]float64{}, dirty: map[string]map[string]bool{}}
+	m, err := st.LoadDaily()
 	if err != nil {
 		return d, err
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		p := strings.Split(strings.TrimSpace(sc.Text()), ",")
-		if len(p) != 3 {
-			continue
-		}
-		v, err := strconv.ParseFloat(p[2], 64)
-		if err != nil || v < 0 {
-			continue
-		}
-		d.put(p[1], p[0], v)
-	}
+	d.m = m
 	return d, nil
 }
 
@@ -144,7 +129,10 @@ func (d *Daily) put(id, day string, kwh float64) {
 	}
 	if kwh > d.m[id][day] || !d.has(id, day) {
 		d.m[id][day] = kwh
-		d.dirty = true
+		if d.dirty[id] == nil {
+			d.dirty[id] = map[string]bool{}
+		}
+		d.dirty[id][day] = true
 	}
 }
 
@@ -176,37 +164,33 @@ func (d *Daily) Month(id string, y int, m time.Month) (float64, int) {
 	return sum, days
 }
 
-// Flush menulis ke disk bila ada perubahan; hari yang lebih tua dari ~400 hari dibuang.
+// Flush menyimpan baris yang berubah; hari yang lebih tua dari ~400 hari dibuang.
 func (d *Daily) Flush(now time.Time, loc *time.Location) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if !d.dirty {
+	if len(d.dirty) == 0 {
 		return nil
 	}
 	cut := now.In(loc).AddDate(0, 0, -dailyKeepDays).Format("2006-01-02")
-	var lines []string
-	for id, days := range d.m {
-		for day, v := range days {
-			if day < cut {
-				delete(days, day)
+	if err := d.st.PruneDaily(cut); err != nil {
+		return err
+	}
+	var firstErr error
+	for id, days := range d.dirty {
+		for day := range days {
+			v, ok := d.m[id][day]
+			if !ok || day < cut {
 				continue
 			}
-			lines = append(lines, fmt.Sprintf("%s,%s,%.3f", day, id, v))
+			if err := d.st.SaveDaily(id, day, v); err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
-	sort.Strings(lines)
-	if err := os.MkdirAll(filepath.Dir(d.path), 0o755); err != nil {
-		return err
+	if firstErr == nil {
+		d.dirty = map[string]map[string]bool{}
 	}
-	tmp := d.path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, d.path); err != nil {
-		return err
-	}
-	d.dirty = false
-	return nil
+	return firstErr
 }
 
 /* ---------------- perbandingan: hari ini / minggu ini / bulan ini vs sebelumnya ---------------- */
@@ -331,30 +315,4 @@ func (d *Daily) Fill(id string, perDay map[string]float64) {
 			d.put(id, day, v)
 		}
 	}
-}
-
-// MergeFrom menyalin hari dari o ke d (nilai terbesar menang); mengembalikan jumlah hari yang berubah.
-func (d *Daily) MergeFrom(o *Daily) int {
-	o.mu.Lock()
-	src := map[string]map[string]float64{}
-	for id, days := range o.m {
-		c := map[string]float64{}
-		for k, v := range days {
-			c[k] = v
-		}
-		src[id] = c
-	}
-	o.mu.Unlock()
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	n := 0
-	for id, days := range src {
-		for day, v := range days {
-			if cur, ok := d.m[id][day]; !ok || v > cur {
-				d.put(id, day, v)
-				n++
-			}
-		}
-	}
-	return n
 }

@@ -1,8 +1,4 @@
-//go:build sqlite
-
 package sqlstore
-
-// Jalankan di mesin yang punya driver:  go test -tags sqlite ./internal/sqlstore
 
 import (
 	"path/filepath"
@@ -104,69 +100,63 @@ func TestOnOffSurvivesReopen(t *testing.T) {
 	}
 }
 
-func TestMigrationFromFiles(t *testing.T) {
-	dir := t.TempDir()
-	base := time.Now().Truncate(time.Second).Add(-2 * time.Hour)
-	now := func() time.Time { return base.Add(time.Hour) }
+func TestEnergyDailyRoundTrip(t *testing.T) {
+	d := openDB(t, filepath.Join(t.TempDir(), "t.db"))
+	st := d.EnergyDaily()
+	m, err := st.LoadDaily()
+	if err != nil || len(m) != 0 {
+		t.Fatalf("kosong: %v %v", m, err)
+	}
+	if err := st.SaveDaily("ac", "2026-11-03", 1.25); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveDaily("ac", "2026-11-03", 1.75); err != nil { // idempotent per kunci
+		t.Fatal(err)
+	}
+	if err := st.SaveDaily("led", "2026-11-03", 0.4); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PruneDaily("2026-11-02"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PruneDaily("2026-11-04"); err != nil {
+		t.Fatal(err)
+	}
+	m, err = st.LoadDaily()
+	if err != nil || len(m) != 0 {
+		t.Fatalf("setelah prune harus kosong: %v %v", m, err)
+	}
+}
 
-	// --- data lama berbentuk file
-	ol, err := onoff.Open(filepath.Join(dir, "onoff"), now)
-	if err != nil {
+func TestOnOffSrcRoundTrip(t *testing.T) {
+	d := openDB(t, filepath.Join(t.TempDir(), "t.db"))
+	st := d.OnOff().(interface {
+		SrcStart() (int64, error)
+		SetSrcStart(int64) error
+		LoadSrc(int64) ([]onoff.SrcRec, error)
+		AppendSrc(onoff.SrcRec) error
+	})
+	if at, err := st.SrcStart(); err != nil || at != 0 {
+		t.Fatalf("awal kosong: %d %v", at, err)
+	}
+	if err := st.SetSrcStart(1000); err != nil {
 		t.Fatal(err)
 	}
-	ol.Add("lampu", base, onoff.Off)
-	ol.Add("lampu", base.Add(5*time.Minute), onoff.On)
-	ol.Touch()
-
-	pl, err := powerlog.Open("ac", powerlog.Config{Dir: filepath.Join(dir, "power", "ac"), Now: now})
-	if err != nil {
+	if err := st.AppendSrc(onoff.SrcRec{T: 1010, ID: "lampu", Src: "Dashboard"}); err != nil {
 		t.Fatal(err)
 	}
-	pl.Add(base, "on", 5, 216, 0.1, false)
-	for s := 100; s <= 400; s += 30 {
-		pl.Add(base.Add(time.Duration(s)*time.Second), "on", 390, 216, 1.8, true)
-	}
-	pl.Add(base.Add(430*time.Second), "on", 5, 216, 0.1, false)
-	if err := pl.Flush(); err != nil {
+	if err := st.AppendSrc(onoff.SrcRec{T: 1020, ID: "ac", Src: "Scene: Pagi"}); err != nil {
 		t.Fatal(err)
 	}
-	// pembanding: apa yang dimuat ulang dari file (menit terakhir yang belum final memang belum ditulis)
-	plf, err := powerlog.Open("ac", powerlog.Config{Dir: filepath.Join(dir, "power", "ac"), Now: now})
-	if err != nil {
-		t.Fatal(err)
+	if at, _ := st.SrcStart(); at != 1000 {
+		t.Fatalf("awal pencatatan: %d", at)
 	}
-	want := plf.History(3)
-
-	// --- impor ke SQLite (dua kali: kedua harus tidak menggandakan)
-	d := openDB(t, filepath.Join(dir, "dashboard.db"))
-	for i := 0; i < 2; i++ {
-		ofs, _ := onoff.NewFileStore(filepath.Join(dir, "onoff"))
-		if err := d.MigrateOnOff(ofs); err != nil {
-			t.Fatal(err)
-		}
-		pfs, _ := powerlog.NewFileStore(filepath.Join(dir, "power", "ac"))
-		if err := d.MigratePower("ac", pfs); err != nil {
-			t.Fatal(err)
-		}
+	recs, err := st.LoadSrc(1000)
+	if err != nil || len(recs) != 2 || recs[0].ID != "lampu" || recs[1].Src != "Scene: Pagi" {
+		t.Fatalf("LoadSrc: %+v %v", recs, err)
 	}
-
-	ol2, err := onoff.OpenStore(d.OnOff(), now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := ol2.Last("lampu"); !ok {
-		t.Fatal("riwayat ON/OFF tidak terimpor")
-	}
-	pl2, err := powerlog.Open("ac", powerlog.Config{Store: d.Power("ac"), Now: now})
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := pl2.History(3)
-	if len(got.Events) != len(want.Events) || len(got.Minutes) != len(want.Minutes) {
-		t.Fatalf("setelah impor: kejadian %d/%d, menit %d/%d", len(got.Events), len(want.Events), len(got.Minutes), len(want.Minutes))
-	}
-	if got.Stats.Cycles != want.Stats.Cycles || got.Stats.KWh != want.Stats.KWh {
-		t.Fatalf("statistik berbeda: %+v vs %+v", got.Stats, want.Stats)
+	if recs, _ := st.LoadSrc(1015); len(recs) != 1 || recs[0].ID != "ac" {
+		t.Fatalf("filter cut: %+v", recs)
 	}
 }
 

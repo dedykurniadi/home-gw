@@ -1,8 +1,5 @@
-// Paket sqlstore menyimpan riwayat ON/OFF dan log daya ke satu berkas SQLite.
-//
-// Paket ini hanya memakai database/sql. Driver SQLite (modernc.org/sqlite, tanpa CGO) baru
-// ikut terpasang bila dibangun dengan -tags sqlite (lihat driver_sqlite.go dan README);
-// tanpa tag itu Open mengembalikan ErrNoDriver dan dashboard memakai file CSV seperti biasa.
+// Paket sqlstore menyimpan seluruh data dashboard (riwayat ON/OFF, log daya, kWh harian,
+// pengaturan energi, dan log jadwal) ke satu berkas SQLite.
 package sqlstore
 
 import (
@@ -14,34 +11,22 @@ import (
 	"strconv"
 	"time"
 
+	_ "modernc.org/sqlite" // driver murni-Go, cross-compile ke linux/arm tanpa CGO
+
+	"owrt-dashboard/internal/energy"
 	"owrt-dashboard/internal/onoff"
 	"owrt-dashboard/internal/powerlog"
 )
 
-// ErrNoDriver: binary dibangun tanpa driver SQLite.
-var ErrNoDriver = errors.New("binary ini dibangun tanpa SQLite (bangun dengan -tags sqlite, lihat README)")
-
 const driverName = "sqlite"
 
 type DB struct{ db *sql.DB }
-
-func hasDriver() bool {
-	for _, d := range sql.Drivers() {
-		if d == driverName {
-			return true
-		}
-	}
-	return false
-}
 
 // Open membuka (dan menyiapkan) berkas SQLite di path.
 // Mode jurnal DELETE + synchronous FULL dipilih sengaja: penulisan jarang dan dikelompokkan, tidak
 // ada berkas -wal/-shm (mmap bersama bermasalah di sebagian filesystem overlay OpenWrt), dan data
 // tetap utuh bila listrik padam.
 func Open(path string) (*DB, error) {
-	if !hasDriver() {
-		return nil, ErrNoDriver
-	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
@@ -76,31 +61,6 @@ func inTx(db *sql.DB, fn func(tx *sql.Tx) error) error {
 		return err
 	}
 	return tx.Commit()
-}
-
-func (d *DB) metaGet(k string) (string, bool) {
-	var v string
-	if err := d.db.QueryRow(qMetaGet, k).Scan(&v); err != nil {
-		return "", false
-	}
-	return v, true
-}
-
-func (d *DB) metaSet(k, v string) error {
-	_, err := d.db.Exec(qMetaSet, k, v)
-	return err
-}
-
-// ImportOnce menjalankan fn hanya sekali per nama (impor data lama); gagal = diulang saat start berikutnya.
-func (d *DB) ImportOnce(name string, fn func() error) error {
-	k := "import:" + name
-	if _, done := d.metaGet(k); done {
-		return nil
-	}
-	if err := fn(); err != nil {
-		return err
-	}
-	return d.metaSet(k, strconv.FormatInt(time.Now().Unix(), 10))
 }
 
 /* ---------------- riwayat ON/OFF ---------------- */
@@ -193,24 +153,46 @@ func (s *onoffStore) SetAlive(t int64) error {
 	return err
 }
 
-// MigrateOnOff memindahkan riwayat dari file lama (sekali saja; file lama dibiarkan sebagai cadangan).
-func (d *DB) MigrateOnOff(fs *onoff.FileStore) error {
-	return d.ImportOnce("onoff", func() error {
-		all, err := fs.Load(0)
-		if err != nil {
-			return err
+func (s *onoffStore) LoadSrc(cut int64) ([]onoff.SrcRec, error) {
+	rows, err := s.db.Query(qSrcLoad, cut)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []onoff.SrcRec
+	for rows.Next() {
+		var r onoff.SrcRec
+		if err := rows.Scan(&r.T, &r.ID, &r.Src); err != nil {
+			return out, err
 		}
-		st := d.OnOff()
-		for id, evs := range all {
-			if err := st.Replace(id, evs); err != nil {
-				return err
-			}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	s.db.Exec(qSrcPrune, cut)
+	return out, nil
+}
+
+func (s *onoffStore) SrcStart() (int64, error) {
+	var v string
+	if err := s.db.QueryRow(qMetaGet, "onoff_src_start").Scan(&v); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
 		}
-		if at, ok := fs.Alive(); ok {
-			return st.SetAlive(at)
-		}
-		return nil
-	})
+		return 0, err
+	}
+	return strconv.ParseInt(v, 10, 64)
+}
+
+func (s *onoffStore) AppendSrc(r onoff.SrcRec) error {
+	_, err := s.db.Exec(qSrcAppend, r.ID, r.T, r.Src)
+	return err
+}
+
+func (s *onoffStore) SetSrcStart(t int64) error {
+	_, err := s.db.Exec(qMetaSet, "onoff_src_start", strconv.FormatInt(t, 10))
+	return err
 }
 
 /* ---------------- log daya (satu Store per perangkat) ---------------- */
@@ -325,31 +307,40 @@ func (s *powerStore) Prune(rawBefore, minuteBefore time.Time) error {
 	return err
 }
 
-// MigratePower memindahkan file CSV lama perangkat dev (sekali saja; file lama dibiarkan sebagai cadangan).
-func (d *DB) MigratePower(dev string, fs *powerlog.FileStore) error {
-	return d.ImportOnce("power:"+dev, func() error {
-		st := d.Power(dev).(*powerStore)
-		evs, _ := fs.LoadEvents(0)
-		mins, _ := fs.LoadMinutes(0)
-		raw := fs.LoadRaw(0)
-		if _, err := d.db.Exec(qRawDelete, dev); err != nil { // sisa impor yang gagal sebelumnya
-			return err
+/* ---------------- kWh harian terukur ---------------- */
+
+type dailyStore struct{ db *sql.DB }
+
+// EnergyDaily mengembalikan penyimpanan kWh harian terukur untuk paket energy.
+func (d *DB) EnergyDaily() energy.DailyStore { return &dailyStore{d.db} }
+
+func (s *dailyStore) LoadDaily() (map[string]map[string]float64, error) {
+	rows, err := s.db.Query(qDailyAll)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]map[string]float64{}
+	for rows.Next() {
+		var id, day string
+		var kwh float64
+		if err := rows.Scan(&id, &day, &kwh); err != nil {
+			return nil, err
 		}
-		if err := st.AppendEvents(evs); err != nil {
-			return err
+		if out[id] == nil {
+			out[id] = map[string]float64{}
 		}
-		if err := st.AppendMinutes(mins); err != nil {
-			return err
-		}
-		for i := 0; i < len(raw); i += 5000 {
-			j := i + 5000
-			if j > len(raw) {
-				j = len(raw)
-			}
-			if err := st.AppendRaw(raw[i:j]); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+		out[id][day] = kwh
+	}
+	return out, rows.Err()
+}
+
+func (s *dailyStore) SaveDaily(id, day string, kwh float64) error {
+	_, err := s.db.Exec(qDailySave, id, day, kwh)
+	return err
+}
+
+func (s *dailyStore) PruneDaily(cut string) error {
+	_, err := s.db.Exec(qDailyPrune, cut)
+	return err
 }

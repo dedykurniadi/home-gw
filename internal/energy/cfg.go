@@ -1,10 +1,7 @@
 package energy
 
 import (
-	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -20,7 +17,7 @@ type Cfg struct {
 
 var ErrCfg = errors.New("pengaturan energi tidak valid")
 
-// CfgStore menyimpan Cfg per perangkat (SQLite atau file JSON).
+// CfgStore menyimpan Cfg per perangkat (SQLite).
 type CfgStore interface {
 	LoadAll() (map[string]Cfg, error)
 	Save(id string, c Cfg) error
@@ -76,47 +73,4 @@ func (c *Config) Set(id string, v Cfg) error {
 	}
 	c.m[id] = v
 	return nil
-}
-
-/* ---- penyimpanan file JSON (tanpa SQLite) ---- */
-
-type fileCfg struct {
-	mu   sync.Mutex
-	path string
-}
-
-func NewFileCfg(path string) CfgStore { return &fileCfg{path: path} }
-
-func (f *fileCfg) LoadAll() (map[string]Cfg, error) {
-	b, err := os.ReadFile(f.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return map[string]Cfg{}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	m := map[string]Cfg{}
-	if err := json.Unmarshal(b, &m); err != nil {
-		return nil, err
-	}
-	return m, nil
-}
-
-func (f *fileCfg) Save(id string, c Cfg) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	m, err := f.LoadAll()
-	if err != nil {
-		return err
-	}
-	m[id] = c
-	b, _ := json.MarshalIndent(m, "", " ")
-	if err := os.MkdirAll(filepath.Dir(f.path), 0o755); err != nil {
-		return err
-	}
-	tmp := f.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, f.path)
 }

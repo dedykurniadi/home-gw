@@ -12,6 +12,9 @@ var schemaStmts = []string{
 	`CREATE TABLE IF NOT EXISTS sched_log(seq INTEGER PRIMARY KEY AUTOINCREMENT, t INTEGER NOT NULL, fire INTEGER NOT NULL, scene TEXT NOT NULL, label TEXT NOT NULL, ok INTEGER NOT NULL, err TEXT NOT NULL, fails TEXT NOT NULL)`,
 	`CREATE INDEX IF NOT EXISTS sched_log_t ON sched_log(t)`,
 	`CREATE TABLE IF NOT EXISTS energy_cfg(id TEXT PRIMARY KEY, watt REAL NOT NULL, standby REAL NOT NULL, note TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS onoff_src(id TEXT NOT NULL, t INTEGER NOT NULL, src TEXT NOT NULL)`,
+	`CREATE INDEX IF NOT EXISTS onoff_src_id_t ON onoff_src(id, t)`,
+	`CREATE TABLE IF NOT EXISTS energy_daily(dev TEXT NOT NULL, day TEXT NOT NULL, kwh REAL NOT NULL, PRIMARY KEY(dev, day))`,
 }
 
 const (
@@ -28,10 +31,16 @@ const (
 	qOnoffAppend = `INSERT INTO onoff_events(id, t, state) VALUES(?, ?, ?) ON CONFLICT(id, t) DO UPDATE SET state = excluded.state`
 	qOnoffDelete = `DELETE FROM onoff_events WHERE id = ?`
 
+	qSrcLoad    = `SELECT t, id, src FROM onoff_src WHERE t >= ? ORDER BY t`
+	qSrcAppend  = `INSERT INTO onoff_src(id, t, src) VALUES(?, ?, ?)`
+	qSrcPrune   = `DELETE FROM onoff_src WHERE t < ?`
+	qDailyAll   = `SELECT dev, day, kwh FROM energy_daily`
+	qDailySave  = `INSERT INTO energy_daily(dev, day, kwh) VALUES(?, ?, ?) ON CONFLICT(dev, day) DO UPDATE SET kwh = excluded.kwh`
+	qDailyPrune = `DELETE FROM energy_daily WHERE day < ?`
+
 	qRawInsert = `INSERT INTO pw_raw(dev, t, w, v, a, sw, src) VALUES(?, ?, ?, ?, ?, ?, ?)`
 	qRawLast   = `SELECT t, w, v, a, sw, src FROM pw_raw WHERE dev = ? ORDER BY t DESC LIMIT 1`
 	qRawPrune  = `DELETE FROM pw_raw WHERE dev = ? AND t < ?`
-	qRawDelete = `DELETE FROM pw_raw WHERE dev = ?`
 
 	qMinUpsert = `INSERT INTO pw_min(dev, t, w_avg, w_min, w_max, v, a, cov) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(dev, t) DO UPDATE SET w_avg = excluded.w_avg, w_min = excluded.w_min, w_max = excluded.w_max,

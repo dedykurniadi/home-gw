@@ -1,8 +1,7 @@
 package onoff
 
 import (
-	"os"
-	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -16,12 +15,76 @@ type clk struct{ t time.Time }
 
 func (c *clk) now() time.Time { return c.t }
 
-func TestAddDedupeAndHistory(t *testing.T) {
-	c := &clk{at(1000)}
-	l, err := Open(t.TempDir(), c.now)
+// memStore: Store + SrcStore tiruan di memori.
+type memStore struct {
+	ev    map[string][]Event
+	alive int64
+	src   []SrcRec
+	start int64
+}
+
+func newMemStore() *memStore {
+	return &memStore{ev: map[string][]Event{}}
+}
+
+func (m *memStore) Load(cut int64) (map[string][]Event, error) {
+	out := map[string][]Event{}
+	for id, evs := range m.ev {
+		c := append([]Event(nil), evs...)
+		// buang yang kedaluwarsa, tetapi sisakan satu kejadian sebelum batas sebagai status awal
+		i := sort.Search(len(c), func(i int) bool { return c[i].T >= cut })
+		if i > 1 {
+			c = c[i-1:]
+			m.ev[id] = append([]Event(nil), c...)
+		}
+		out[id] = c
+	}
+	return out, nil
+}
+func (m *memStore) Append(id string, e Event) error { m.ev[id] = append(m.ev[id], e); return nil }
+func (m *memStore) Replace(id string, evs []Event) error {
+	m.ev[id] = append([]Event(nil), evs...)
+	return nil
+}
+func (m *memStore) Alive() (int64, bool)   { return m.alive, m.alive > 0 }
+func (m *memStore) SetAlive(t int64) error { m.alive = t; return nil }
+
+func (m *memStore) SrcStart() (int64, error) { return m.start, nil }
+func (m *memStore) SetSrcStart(t int64) error {
+	m.start = t
+	return nil
+}
+func (m *memStore) LoadSrc(cut int64) ([]SrcRec, error) {
+	var out []SrcRec
+	for _, r := range m.src {
+		if r.T >= cut {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+func (m *memStore) AppendSrc(r SrcRec) error { m.src = append(m.src, r); return nil }
+
+// open memakai satu store per "dir" agar test restart membaca data yang sama.
+func open(t *testing.T, dir string, now func() time.Time) (*Log, *memStore) {
+	t.Helper()
+	st := stores[dir]
+	if st == nil {
+		st = newMemStore()
+		stores[dir] = st
+	}
+	l, err := OpenStore(st, now)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return l, st
+}
+
+var stores = map[string]*memStore{}
+
+func TestAddDedupeAndHistory(t *testing.T) {
+	c := &clk{at(1000)}
+	l, _ := open(t, "dedupe", c.now)
 	if !l.Add("dev1", at(0), On) || l.Add("dev1", at(10), On) {
 		t.Fatal("status sama harus dibuang")
 	}
@@ -45,7 +108,7 @@ func TestAddDedupeAndHistory(t *testing.T) {
 
 func TestWindowClipsAndKeepsStartState(t *testing.T) {
 	c := &clk{t0.Add(3 * time.Hour)}
-	l, _ := Open(t.TempDir(), c.now)
+	l, _ := open(t, "window", c.now)
 	l.Add("d", t0, On) // 3 jam lalu, tetap ON sampai sekarang
 	h, _ := l.History("d", 1)
 	if len(h.Segs) != 1 || h.Segs[0].T0 != h.From || h.Segs[0].State != On || h.Stats.OnSec != 3600 {
@@ -57,14 +120,13 @@ func TestWindowClipsAndKeepsStartState(t *testing.T) {
 }
 
 func TestPersistAndGapAfterRestart(t *testing.T) {
-	dir := t.TempDir()
 	c := &clk{at(0)}
-	l, _ := Open(dir, c.now)
+	l, _ := open(t, "restart", c.now)
 	l.Add("d", at(0), On)
 	c.t = at(600)
 	l.Touch() // dashboard terakhir hidup di detik 600, lalu mati
 	c.t = at(5000)
-	l2, _ := Open(dir, c.now)
+	l2, _ := open(t, "restart", c.now)
 	last, _ := l2.Last("d")
 	if last.State != Gap || last.T != at(600).Unix() {
 		t.Fatalf("setelah restart harus gap sejak 600: %+v", last)
@@ -76,9 +138,8 @@ func TestPersistAndGapAfterRestart(t *testing.T) {
 }
 
 func TestPruneOldAndRejectBadInput(t *testing.T) {
-	dir := t.TempDir()
 	c := &clk{t0}
-	l, _ := Open(dir, c.now)
+	l, _ := open(t, "prune", c.now)
 	if l.Add("../x", t0, On) || l.Add("d", t0, "bogus") || l.Add("d", time.Unix(5, 0), On) {
 		t.Fatal("input buruk harus ditolak")
 	}
@@ -87,16 +148,15 @@ func TestPruneOldAndRejectBadInput(t *testing.T) {
 	l.Add("d", old.Add(time.Hour), Off)
 	l.Add("d", t0.Add(-time.Hour), On)
 	c.t = t0
-	l2, _ := Open(dir, c.now)
-	b, _ := os.ReadFile(filepath.Join(dir, "d.log"))
+	l2, _ := open(t, "prune", c.now)
 	if n := len(l2.ev["d"]); n != 2 { // satu sebelum batas (Off) + satu baru
-		t.Fatalf("setelah prune %d kejadian:\n%s", n, b)
+		t.Fatalf("setelah prune %d kejadian: %+v", n, l2.ev["d"])
 	}
 }
 
 func TestSeconds(t *testing.T) {
 	c := &clk{at(1000)}
-	l, _ := Open(t.TempDir(), c.now)
+	l, _ := open(t, "seconds", c.now)
 	l.Add("d", at(100), On)
 	l.Add("d", at(400), Off)
 	l.Add("d", at(700), Gap)
@@ -113,28 +173,8 @@ func TestSeconds(t *testing.T) {
 	}
 }
 
-type memStore struct {
-	ev    map[string][]Event
-	alive int64
-}
-
-func (m *memStore) Load(cut int64) (map[string][]Event, error) {
-	out := map[string][]Event{}
-	for id, evs := range m.ev {
-		out[id] = append([]Event(nil), evs...)
-	}
-	return out, nil
-}
-func (m *memStore) Append(id string, e Event) error { m.ev[id] = append(m.ev[id], e); return nil }
-func (m *memStore) Replace(id string, evs []Event) error {
-	m.ev[id] = append([]Event(nil), evs...)
-	return nil
-}
-func (m *memStore) Alive() (int64, bool)   { return m.alive, m.alive > 0 }
-func (m *memStore) SetAlive(t int64) error { m.alive = t; return nil }
-
 func TestStoreInterface(t *testing.T) {
-	st := &memStore{ev: map[string][]Event{}}
+	st := newMemStore()
 	c := &clk{at(1000)}
 	l, err := OpenStore(st, c.now)
 	if err != nil {
@@ -159,9 +199,8 @@ func TestStoreInterface(t *testing.T) {
 }
 
 func TestSinceBridgesGapOnlyWhenStateSame(t *testing.T) {
-	dir := t.TempDir()
 	c := &clk{at(0)}
-	l, _ := Open(dir, c.now)
+	l, _ := open(t, "since", c.now)
 	if _, ok := l.Since("d"); ok {
 		t.Fatal("tanpa riwayat harus ok=false")
 	}
@@ -172,7 +211,7 @@ func TestSinceBridgesGapOnlyWhenStateSame(t *testing.T) {
 	c.t = at(600)
 	l.Touch() // gateway mati di 600, hidup lagi di 5000
 	c.t = at(5000)
-	l2, _ := Open(dir, c.now)
+	l2, _ := open(t, "since", c.now)
 	if _, ok := l2.Since("d"); ok {
 		t.Fatal("saat gap belum ada status: ok=false")
 	}
@@ -184,7 +223,7 @@ func TestSinceBridgesGapOnlyWhenStateSame(t *testing.T) {
 	c.t = at(6000)
 	l2.Touch()
 	c.t = at(9000)
-	l3, _ := Open(dir, c.now)
+	l3, _ := open(t, "since", c.now)
 	l3.Add("d", at(9002), Off)
 	if s, _ := l3.Since("d"); s != at(9002).Unix() {
 		t.Fatalf("status berubah saat gateway mati: harus %d, dapat %d", at(9002).Unix(), s)
@@ -198,7 +237,7 @@ func TestSinceBridgesGapOnlyWhenStateSame(t *testing.T) {
 
 func TestShortGapsIgnoredOnRead(t *testing.T) {
 	c := &clk{at(10000)}
-	l, _ := Open(t.TempDir(), c.now)
+	l, _ := open(t, "shortgap", c.now)
 	// ON@0, gap pendek 100 dtk lalu ON lagi; kemudian gap 130 dtk lalu OFF
 	l.Add("d", at(0), On)
 	l.add("d", Event{at(1000).Unix(), Gap}) // data lama: gap 100 dtk (< 2 menit) disimpan di penyimpanan
@@ -228,7 +267,7 @@ func TestShortGapsIgnoredOnRead(t *testing.T) {
 
 func TestOngoingShortGapAndLeadingGap(t *testing.T) {
 	c := &clk{at(1050)}
-	l, _ := Open(t.TempDir(), c.now)
+	l, _ := open(t, "ongoing", c.now)
 	l.Add("d", at(0), On)
 	l.add("d", Event{at(1000).Unix(), Gap}) // baru 50 dtk: masih dianggap ON
 	if s, ok := l.Since("d"); !ok || s != at(0).Unix() {
@@ -243,7 +282,7 @@ func TestOngoingShortGapAndLeadingGap(t *testing.T) {
 		t.Fatal("gap > 2 menit harus terlihat sebagai gap")
 	}
 	// gap di awal riwayat dipertahankan
-	l2, _ := Open(t.TempDir(), c.now)
+	l2, _ := open(t, "leading", c.now)
 	l2.add("x", Event{at(1000).Unix(), Gap})
 	l2.add("x", Event{at(1010).Unix(), On})
 	h2, _ := l2.History("x", 24)
@@ -253,11 +292,13 @@ func TestOngoingShortGapAndLeadingGap(t *testing.T) {
 }
 
 func TestSourceOfEvents(t *testing.T) {
-	st := &memStore{ev: map[string][]Event{}}
+	st := newMemStore()
 	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
 	cur := now.Add(-3 * time.Hour)
-	l, _ := OpenStore(st, func() time.Time { return cur })
-	l.SetSrcFile(t.TempDir() + "/src.txt")
+	l, err := OpenStore(st, func() time.Time { return cur })
+	if err != nil {
+		t.Fatal(err)
+	}
 	l.Add("a", cur, On) // status awal: tanpa sumber
 	cur = cur.Add(time.Hour)
 	l.NoteCmd("a", "Scene: Pagi")
@@ -273,5 +314,14 @@ func TestSourceOfEvents(t *testing.T) {
 	}
 	if want := "on: off:Scene: Pagi on:Perangkat"; strings.Join(got, " ") != want {
 		t.Fatalf("got %q want %q", strings.Join(got, " "), want)
+	}
+	if len(st.src) != 1 || st.src[0].Src != "Scene: Pagi" {
+		t.Fatalf("sumber harus tersimpan: %+v", st.src)
+	}
+	// sumber bertahan setelah restart
+	l2, _ := OpenStore(st, func() time.Time { return now })
+	h2, _ := l2.History("a", 24)
+	if len(h2.Events) != 3 || h2.Events[1].Src != "Scene: Pagi" {
+		t.Fatalf("setelah restart: %+v", h2.Events)
 	}
 }
