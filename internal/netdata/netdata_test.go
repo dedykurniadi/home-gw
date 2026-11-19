@@ -194,3 +194,34 @@ func TestProbeWiredFallbackReadsARP(t *testing.T) {
 		t.Fatalf("up=%v", up)
 	}
 }
+
+func TestWiFiHostUpImmediatelyEvenBeforePing(t *testing.T) {
+	c := New(Config{NoPing: true})
+	r := []Client{{IP: "10.0.0.99", MAC: "aa:bb:cc:dd:ee:ff", HasSignal: true, Signal: -55}}
+	// Belum ada ping sama sekali (res kosong)
+	c.applyPing(r, map[string]time.Duration{}, true)
+	if !r[0].Up {
+		t.Fatal("perangkat wifi dengan sinyal aktif harus langsung UP tanpa nunggu ping")
+	}
+
+	// quickPublish juga harus langsung tandai UP
+	r2 := []Client{{IP: "10.0.0.99", MAC: "aa:bb:cc:dd:ee:ff", HasSignal: true, Signal: -55}}
+	c.applyCurrentState(r2)
+	if !r2[0].Up {
+		t.Fatal("applyCurrentState harus langsung tandai perangkat wifi aktif sebagai UP")
+	}
+}
+
+func TestBuildRowsIncludesWiFiStationsWithKnownIP(t *testing.T) {
+	// Klien terhubung ke WiFi hostapd, tetapi belum tercatat di file leases atau ARP
+	rows := buildRows(buildInput{
+		Wifi:     map[string]wifiInfo{"11:22:33:44:55:66": {"5G", -48}},
+		KnownIPs: map[string]string{"11:22:33:44:55:66": "10.142.27.88"},
+	})
+	if len(rows) != 1 {
+		t.Fatalf("klien wifi harus masuk ke baris: len=%d", len(rows))
+	}
+	if rows[0].IP != "10.142.27.88" || rows[0].MAC != "11:22:33:44:55:66" || !rows[0].HasSignal || rows[0].Conn != "WiFi 5G" {
+		t.Fatalf("data baris wifi salah: %+v", rows[0])
+	}
+}

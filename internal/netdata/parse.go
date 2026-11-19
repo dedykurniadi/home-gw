@@ -149,12 +149,13 @@ func median(v []float64) float64 {
 }
 
 type buildInput struct {
-	Leases  []lease
-	ARP     []arpEntry
-	Wifi    map[string]wifiInfo
-	Conn    map[string]int64
-	Static  []StaticHost
-	Aliases map[string]string
+	Leases   []lease
+	ARP      []arpEntry
+	Wifi     map[string]wifiInfo
+	Conn     map[string]int64
+	Static   []StaticHost
+	Aliases  map[string]string
+	KnownIPs map[string]string
 }
 
 // buildRows menyusun satu baris per IP. Satu MAC boleh punya beberapa IP (mis. Intel AMT, VM, alias).
@@ -185,6 +186,36 @@ func buildRows(in buildInput) []Client {
 		c.Name = s.Name
 		c.Fixed = true
 	}
+
+	seenMAC := map[string]bool{}
+	for _, c := range rows {
+		if c.MAC != "" {
+			seenMAC[strings.ToLower(c.MAC)] = true
+		}
+	}
+	// Pastikan klien WiFi yang terhubung ke hostapd selalu ada di daftar baris meskipun belum ada di ARP/leases
+	for mac, w := range in.Wifi {
+		macLower := strings.ToLower(mac)
+		if !seenMAC[macLower] {
+			ip := ""
+			if in.KnownIPs != nil {
+				ip = in.KnownIPs[macLower]
+			}
+			if ip == "" {
+				ip = "-"
+			}
+			c := get(ip)
+			c.MAC = macLower
+			c.Conn = "WiFi " + w.Band
+			c.Signal, c.HasSignal = w.Signal, true
+			c.Src = "WiFi"
+			if t, ok := in.Conn[macLower]; ok {
+				c.Connected = t
+			}
+			seenMAC[macLower] = true
+		}
+	}
+
 	out := make([]Client, 0, len(rows))
 	for ip, c := range rows {
 		if c.MAC != "" {

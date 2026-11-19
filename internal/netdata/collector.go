@@ -168,6 +168,8 @@ func (c *Collector) Run(ctx context.Context) {
 			default:
 			}
 			c.refreshWifi()
+			// Fast-path: publikasikan update daftar klien WiFi seketika tanpa menunggu siklus ping
+			c.quickPublish()
 			c.cycle()
 			time.Sleep(100 * time.Millisecond)
 		}
@@ -221,29 +223,88 @@ func (c *Collector) readWifi() (map[string]wifiInfo, map[string]int64) {
 	return wifi, conn
 }
 
+// quickPublish menerbitkan snapshot daftar client segera (misal setelah event WiFi masuk/keluar)
+// dengan status saat ini tanpa harus menunggu siklus ping selesai.
+func (c *Collector) quickPublish() {
+	leasesRaw, _ := os.ReadFile(c.cfg.LeasesFile)
+	arpRaw, _ := os.ReadFile(c.cfg.ARPFile)
+	c.mu.RLock()
+	knownIPs := make(map[string]string, len(c.macIP))
+	for k, v := range c.macIP {
+		knownIPs[k] = v
+	}
+	c.mu.RUnlock()
+
+	rows := buildRows(buildInput{
+		Leases:   parseLeases(string(leasesRaw)),
+		ARP:      parseARP(string(arpRaw), c.cfg.LANIface),
+		Wifi:     c.wifi,
+		Conn:     c.conn,
+		Static:   c.cfg.StaticHosts,
+		Aliases:  c.cfg.Aliases,
+		KnownIPs: knownIPs,
+	})
+	c.arpUp = c.probeWired()
+	c.applyCurrentState(rows)
+	c.store(rows)
+}
+
+// applyCurrentState menerapkan status up dan RTT yang sudah ada ke baris baru,
+// dan perangkat dengan HasSignal (WiFi aktif) selalu dianggap Up seketika.
+func (c *Collector) applyCurrentState(rows []Client) {
+	for i := range rows {
+		ip := rows[i].IP
+		if rows[i].HasSignal || c.arpUp[ip] {
+			if st := c.states[ip]; st != nil {
+				st.fails = 0
+				rows[i].RTT = median(st.rtts)
+			}
+			rows[i].Up = true
+			continue
+		}
+		st := c.states[ip]
+		if st != nil {
+			rows[i].Up = st.fails < downAfter
+			if rows[i].Up {
+				rows[i].RTT = median(st.rtts)
+			}
+		}
+	}
+}
+
 func (c *Collector) cycle() {
 	if c.pinger != nil && time.Since(c.lastSweep) >= c.cfg.SweepInterval {
 		// Sweep memaksa kernel menyelesaikan ARP, jadi host yang diam / memblokir ICMP tetap masuk tabel ARP.
 		if hosts := subnetHosts(c.cfg.Subnet); len(hosts) > 0 {
-			c.pinger.Ping(hosts, 1, 800*time.Millisecond)
+			c.pinger.Ping(hosts, 1, 600*time.Millisecond)
 		}
 		c.lastSweep = time.Now()
 	}
 	leasesRaw, _ := os.ReadFile(c.cfg.LeasesFile)
 	arpRaw, _ := os.ReadFile(c.cfg.ARPFile)
+	c.mu.RLock()
+	knownIPs := make(map[string]string, len(c.macIP))
+	for k, v := range c.macIP {
+		knownIPs[k] = v
+	}
+	c.mu.RUnlock()
+
 	rows := buildRows(buildInput{
-		Leases:  parseLeases(string(leasesRaw)),
-		ARP:     parseARP(string(arpRaw), c.cfg.LANIface),
-		Wifi:    c.wifi,
-		Conn:    c.conn,
-		Static:  c.cfg.StaticHosts,
-		Aliases: c.cfg.Aliases,
+		Leases:   parseLeases(string(leasesRaw)),
+		ARP:      parseARP(string(arpRaw), c.cfg.LANIface),
+		Wifi:     c.wifi,
+		Conn:     c.conn,
+		Static:   c.cfg.StaticHosts,
+		Aliases:  c.cfg.Aliases,
+		KnownIPs: knownIPs,
 	})
 	var res map[string]time.Duration
 	if c.pinger != nil {
 		ips := make([]string, 0, len(rows))
 		for _, r := range rows {
-			ips = append(ips, r.IP)
+			if r.IP != "" && r.IP != "-" {
+				ips = append(ips, r.IP)
+			}
 		}
 		res = c.pinger.Ping(ips, 1, 500*time.Millisecond)
 	}
@@ -253,7 +314,7 @@ func (c *Collector) cycle() {
 }
 
 // applyPing memperbarui status per IP: down hanya setelah 3 kali gagal beruntun,
-// latency berupa median dari beberapa sampel terakhir.
+// latency berupa median dari beberapa sampel terakhir. Perangkat WiFi aktif selalu UP seketika.
 func (c *Collector) applyPing(rows []Client, res map[string]time.Duration, pinging bool) {
 	seen := map[string]bool{}
 	for i := range rows {
@@ -268,8 +329,9 @@ func (c *Collector) applyPing(rows []Client, res map[string]time.Duration, pingi
 			st = &hostState{fails: downAfter} // host baru dianggap down sampai menjawab
 			c.states[ip] = st
 		}
-		if c.arpUp[ip] {
-			st.fails = 0 // menjawab ARP: hidup walau ICMP diblokir
+		// Perangkat yang aktif terhubung di WiFi hostapd atau menjawab ARP langsung dianggap UP
+		if rows[i].HasSignal || c.arpUp[ip] {
+			st.fails = 0
 		}
 		if d, ok := res[ip]; ok {
 			st.fails = 0
@@ -277,7 +339,7 @@ func (c *Collector) applyPing(rows []Client, res map[string]time.Duration, pingi
 			if len(st.rtts) > rttWindow {
 				st.rtts = st.rtts[len(st.rtts)-rttWindow:]
 			}
-		} else if st.fails < downAfter {
+		} else if !rows[i].HasSignal && !c.arpUp[ip] && st.fails < downAfter {
 			st.fails++
 		}
 		rows[i].Up = st.fails < downAfter
@@ -297,7 +359,7 @@ func (c *Collector) applyPing(rows []Client, res map[string]time.Duration, pingi
 func (c *Collector) store(rows []Client) {
 	macIP := map[string]string{}
 	for _, r := range rows {
-		if r.MAC == "" {
+		if r.MAC == "" || r.IP == "" || r.IP == "-" {
 			continue
 		}
 		if _, ok := macIP[r.MAC]; !ok || r.Src == "DHCP" {
@@ -307,7 +369,9 @@ func (c *Collector) store(rows []Client) {
 	sort.SliceStable(rows, func(i, j int) bool { return ipKey(rows[i].IP) < ipKey(rows[j].IP) })
 	c.mu.Lock()
 	c.clients = rows
-	c.macIP = macIP
+	for k, v := range macIP {
+		c.macIP[k] = v
+	}
 	c.mu.Unlock()
 	if c.OnUpdate != nil {
 		c.OnUpdate(append([]Client(nil), rows...))
