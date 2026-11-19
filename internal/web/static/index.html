@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Network Dashboard</title>
+<style>
+:root{--bg:#0d1117;--panel:#161b22;--line:#262d38;--txt:#e6edf3;--mut:#8b949e;--ok:#3fb950;--bad:#f85149;--warn:#d29922;--acc:#58a6ff}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%;overflow:hidden}
+body{background:var(--bg);color:var(--txt);font:13px/1.4 system-ui,sans-serif;display:grid;grid-template-rows:48px 1fr;gap:10px;padding:10px}
+header{display:flex;align-items:center;gap:16px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:0 14px}
+header h1{font-size:15px;font-weight:600;margin-right:auto}
+.stat{display:flex;align-items:baseline;gap:6px;color:var(--mut)}
+.stat b{color:var(--txt);font-size:16px}
+#clock{font-variant-numeric:tabular-nums;color:var(--acc)}
+#link{font-size:11px;padding:1px 8px;border-radius:10px;border:1px solid var(--line);color:var(--mut)}
+#link.ok{color:var(--ok);border-color:var(--ok)}#link.bad{color:var(--bad);border-color:var(--bad)}
+main{display:grid;grid-template-columns:1.5fr 1fr;gap:10px;min-height:0}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.ph{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);font-weight:600}
+.ph .sp{margin-left:auto}
+.tabs{display:flex;gap:4px}
+.tabs button,.cams button{background:none;border:1px solid var(--line);color:var(--mut);border-radius:6px;padding:3px 10px;cursor:pointer;font:inherit}
+.tabs button.on,.cams button.on{background:var(--acc);border-color:var(--acc);color:#0d1117;font-weight:600}
+.tw{flex:1;overflow:auto;min-height:0}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{position:sticky;top:0;background:#1c222b;text-align:left;color:var(--mut);font-weight:600;padding:7px 10px;white-space:nowrap;z-index:1}
+td{padding:6px 10px;border-top:1px solid var(--line);white-space:nowrap}
+tr:hover td{background:#1a2029}
+tr.off td{opacity:.5}
+.mono{font-family:ui-monospace,monospace;color:var(--mut)}
+.tag{font-size:11px;padding:1px 7px;border-radius:10px;border:1px solid}
+.t-wifi{color:var(--acc);border-color:var(--acc)}.t-dhcp{color:var(--ok);border-color:var(--ok)}.t-static{color:var(--warn);border-color:var(--warn)}.t-lan{color:var(--mut);border-color:#3a4351}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%}
+.up{background:var(--ok);box-shadow:0 0 6px var(--ok)}.down{background:var(--bad)}
+.bars{display:inline-flex;gap:2px;align-items:flex-end;height:14px;margin-right:7px;vertical-align:middle}
+.bars i{width:3px;background:#30363d;border-radius:1px}
+.bars i:nth-child(1){height:4px}.bars i:nth-child(2){height:7px}.bars i:nth-child(3){height:10px}.bars i:nth-child(4){height:14px}
+.right{display:grid;grid-template-rows:1.25fr 1fr;gap:10px;min-height:0}
+.view{flex:1;min-height:0;position:relative;background:#000;display:grid;place-items:center;overflow:hidden}
+.fake{width:100%;height:100%;background:repeating-linear-gradient(0deg,#0b0f14 0 3px,#10161d 3px 6px);display:grid;place-items:center;color:var(--mut);text-align:center}
+.fake b{display:block;color:var(--txt);font-size:18px;margin-bottom:4px}
+.cams{display:flex;gap:6px;padding:8px 12px;border-top:1px solid var(--line)}
+.cams button{flex:1;padding:5px 0}
+#toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:#3a1d1d;border:1px solid var(--bad);color:var(--txt);padding:8px 14px;border-radius:8px;display:none;max-width:80vw}
+.ph .ch{background:#1c222b;border:1px solid var(--line);border-radius:8px;cursor:pointer;font-size:12px;padding:3px 9px;color:inherit}
+.ph .ch:hover{border-color:var(--acc)}
+.dcols{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.dcols h4,.dsec h4{font-size:12px;color:var(--mut);margin-bottom:6px;font-weight:600}
+.frm{display:grid;grid-template-columns:auto 1fr;gap:8px 12px;align-items:center;font-size:13px}
+.frm select,.frm input[type=number]{background:#1c222b;color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font:inherit;min-width:0}
+.frm select:disabled,.frm input:disabled{opacity:.5}
+.frm .inl{display:flex;align-items:center;gap:8px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12.5px}
+.kv dt{color:var(--mut)}.kv dd{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
+.dnote{font-size:11.5px;color:var(--mut);margin-top:6px}
+#dChart{position:relative}
+#dChart svg{width:100%;height:auto;display:block;background:#10151c;border:1px solid var(--line);border-radius:8px;cursor:crosshair;user-select:none}
+#dChart text{fill:var(--mut);font-size:11px;font-family:system-ui,sans-serif}
+.so2{fill:rgba(63,185,80,.5)}.sf2{fill:rgba(139,148,158,.22)}.sg2{fill:rgba(248,81,73,.28)}
+#dTip{position:absolute;pointer-events:none;background:#0b0f14;border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;white-space:nowrap;display:none;z-index:2}
+.dsec{display:flex;flex-direction:column;gap:8px}
+@media(max-width:700px){.dcols{grid-template-columns:1fr}}
+#modal{position:fixed;inset:0;background:rgba(0,0,0,.62);display:none;align-items:center;justify-content:center;z-index:20;padding:12px}
+#modal.open{display:flex}
+.mbox{background:var(--panel);border:1px solid var(--line);border-radius:12px;width:min(1020px,100%);max-height:96vh;overflow:auto;padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.mh{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.mh b{font-size:15px}.mh .sp{margin-left:auto}
+.mh .rng{display:flex;gap:4px}.mh .rng button.on{background:var(--acc);border-color:var(--acc);color:#0d1117;font-weight:600}
+.zs{fill:rgba(88,166,255,.2);stroke:var(--acc);stroke-width:1}#mSvg{cursor:crosshair;user-select:none}
+.mh select,.mh button{background:#1c222b;color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:3px 8px;font:inherit;cursor:pointer}
+#mChart{position:relative}
+#mChart svg{width:100%;height:auto;display:block;background:#10151c;border:1px solid var(--line);border-radius:8px}
+#mChart text{fill:var(--mut);font-size:11px;font-family:system-ui,sans-serif}
+.sc{fill:rgba(88,166,255,.16)}.so{fill:rgba(139,148,158,.18)}.si{fill:rgba(139,148,158,.07)}.sg{fill:rgba(248,81,73,.16)}
+.gl{stroke:#232a35;stroke-width:1}.th{stroke:var(--warn);stroke-width:1;stroke-dasharray:4 4;opacity:.7}
+.band{fill:rgba(88,166,255,.22)}.ln{fill:none;stroke:var(--acc);stroke-width:1.6;stroke-linejoin:round}
+#mTip{position:absolute;pointer-events:none;background:#0b0f14;border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;white-space:nowrap;display:none;z-index:2}
+.lg{display:flex;gap:14px;flex-wrap:wrap;color:var(--mut);font-size:11.5px}
+.lg i{display:inline-block;width:12px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.tile{background:#1c222b;border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:0}
+.tile small{display:block;color:var(--mut);font-size:11px}.tile b{font-size:17px;font-variant-numeric:tabular-nums}.tile span{display:block;color:var(--mut);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mcols{display:grid;grid-template-columns:1.3fr 1fr;gap:14px}
+.mcols h4{font-size:12px;color:var(--mut);margin-bottom:4px;font-weight:600}
+#mEvents{list-style:none;padding:0;font-size:12px;max-height:150px;overflow:auto}
+#mEvents li{padding:2px 0;border-top:1px solid var(--line)}#mEvents li:first-child{border-top:0}
+#mNote{font-size:12px;color:var(--mut)}
+@media(max-width:700px){.tiles{grid-template-columns:repeat(2,minmax(0,1fr))}.mcols{grid-template-columns:1fr}}
+/* mode hanya-IoT (tanpa tabel client dan kamera) */
+body.iot-only .nt,body.iot-only main>.panel:first-child,body.iot-only .right>.panel:first-child{display:none}
+body.iot-only main{grid-template-columns:1fr}
+body.iot-only .right{grid-template-rows:1fr}
+@media(max-width:900px){html,body{height:auto;overflow:auto}main{grid-template-columns:1fr}.right{grid-template-rows:auto auto}.view{aspect-ratio:16/9}.tw{max-height:50vh}}
+</style>
+<link rel="stylesheet" href="iot.css">
+</head>
+<body>
+<header>
+  <h1>🌐 Network Dashboard</h1>
+  <div class="stat nt">Client <b id="sTot">0</b></div>
+  <div class="stat nt">Online <b id="sOn" style="color:var(--ok)">0</b></div>
+  <div class="stat nt">Offline <b id="sOff" style="color:var(--bad)">0</b></div>
+  <div class="stat">IoT aktif <b id="sIot">0</b>/<span id="sIotN">12</span></div>
+  <span id="link">menghubungkan…</span>
+  <div id="clock"></div>
+</header>
+
+<main>
+  <section class="panel">
+    <div class="ph">Client Jaringan
+      <div class="tabs sp" id="tabs">
+        <button data-f="all" class="on">Semua</button>
+        <button data-f="wifi">WiFi</button>
+        <button data-f="dhcp">DHCP</button>
+        <button data-f="static">Static</button>
+      </div>
+    </div>
+    <div class="tw" id="tw">
+      <table>
+        <thead><tr><th></th><th>Nama</th><th>IP</th><th>MAC</th><th>Koneksi</th><th>Sumber</th><th>Sinyal</th><th>Terhubung</th><th>Ping</th></tr></thead>
+        <tbody id="tb"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <div class="right">
+    <section class="panel">
+      <div class="ph">Kamera <span class="sp mono" id="camName"></span></div>
+      <div class="view" id="view"></div>
+      <div class="cams" id="cams"></div>
+    </section>
+    <section class="panel">
+      <div class="ph">IoT Devices <span class="sp mono" id="eTot" title="Perkiraan pemakaian listrik hari ini, semua perangkat"></span><button class="ch" id="bScene">Scene</button><button class="ch" id="bRep">Laporan</button></div>
+      <div class="iot" id="iot"></div>
+    </section>
+  </div>
+</main>
+<div id="sheet"></div><div id="dlg"></div>
+<div id="modal"><div class="mbox" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+  <div class="mh"><b id="mTitle"></b><span class="mono" id="mLive"></span>
+    <span class="sp"></span><button id="mReset" style="display:none" title="Kembali ke rentang penuh (atau klik dua kali pada grafik)">⟲ Reset zoom</button>
+    <span class="rng" id="mRange" role="group" aria-label="Rentang waktu"><button data-h="1">1j</button><button data-h="6">6j</button><button data-h="12">12j</button><button data-h="24" class="on">24j</button><button data-h="48">48j</button></span>
+    <button id="mClose" aria-label="Tutup">✕</button></div>
+  <div id="mChart"></div>
+  <div class="lg" style="margin-top:-6px"><span>Seret pada grafik untuk zoom · klik dua kali untuk reset</span></div>
+  <div class="lg"><span><i style="background:var(--acc)"></i>Daya rata-rata/menit</span><span><i style="background:rgba(88,166,255,.35)"></i>Rentang min–maks</span><span><i style="background:rgba(88,166,255,.3)"></i>Kompresor ON</span><span><i style="background:rgba(139,148,158,.4)"></i>Relay OFF</span><span><i style="background:rgba(139,148,158,.18)"></i>AC mati (standby)</span><span><i style="background:rgba(248,81,73,.4)"></i>Tidak ada data</span></div>
+  <div class="tiles" id="mTiles"></div>
+  <div class="mcols"><div><h4>Kejadian terakhir</h4><ul id="mEvents"></ul></div><div><h4>Sumber data</h4><div id="mNote"></div></div></div>
+</div></div>
+<div id="toast"></div>
+
+<script>
+const $=id=>document.getElementById(id);
+// Hostname berasal dari perangkat di jaringan, jadi semua teks dinamis wajib di-escape.
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let clients=[],iot=[],power={},filter="all",energy=null;
+
+function fmtDur(s){
+  if(s==null||s<0)return "-";
+  const d=Math.floor(s/86400),h=Math.floor(s/3600)%24,m=Math.floor(s/60)%60,x=s%60,p=n=>String(n).padStart(2,"0");
+  return (d?d+"d ":"")+p(h)+":"+p(m)+":"+p(x);
+}
+function sig(c){
+  if(!c.has_signal)return '<span class="mono">—</span>';
+  const d=c.signal,n=d>-55?4:d>-65?3:d>-75?2:1,col=n>=3?'var(--ok)':n==2?'var(--warn)':'var(--bad)';
+  let b='<span class="bars">';for(let i=1;i<=4;i++)b+=`<i style="${i<=n?'background:'+col:''}"></i>`;
+  return b+`</span>${d} dBm`;
+}
+const isWifi=c=>c.conn.startsWith("WiFi");
+function match(c){return filter=="all"||(filter=="wifi"&&isWifi(c))||(filter=="dhcp"&&c.src=="DHCP")||(filter=="static"&&c.src=="Static");}
+
+function renderTable(){
+  const rows=clients.filter(match);
+  $("tb").innerHTML=rows.map(c=>{
+    const rtt=!c.up?'<span style="color:var(--bad)">down</span>':(c.rtt>=0?`<span style="color:${c.rtt>100?'var(--warn)':'var(--ok)'}">${c.rtt<10?c.rtt.toFixed(1):Math.round(c.rtt)} ms</span>`:'-');
+    return `<tr class="${c.up?'':'off'}"><td><span class="dot ${c.up?'up':'down'}"></span></td>
+      <td>${esc(c.name)||'<span class="mono">-</span>'}</td><td class="mono">${esc(c.ip)}</td><td class="mono">${esc(c.mac)||'-'}</td>
+      <td><span class="tag ${isWifi(c)?'t-wifi':'t-lan'}">${esc(c.conn)}</span></td>
+      <td><span class="tag ${c.src=='DHCP'?'t-dhcp':'t-static'}">${esc(c.src)}</span></td>
+      <td>${sig(c)}</td><td class="mono">${fmtDur(c.connected)}</td><td>${rtt}</td></tr>`;
+  }).join("");
+  const up=clients.filter(c=>c.up).length;
+  $("sTot").textContent=clients.length;$("sOn").textContent=up;$("sOff").textContent=clients.length-up;
+  const n={all:clients.length,wifi:clients.filter(isWifi).length,dhcp:clients.filter(c=>c.src=="DHCP").length,static:clients.filter(c=>c.src=="Static").length};
+  const lbl={all:"Semua",wifi:"WiFi",dhcp:"DHCP",static:"Static"};
+  [...$("tabs").children].forEach(b=>b.textContent=`${lbl[b.dataset.f]} ${n[b.dataset.f]}`);
+}
+$("tabs").onclick=e=>{const b=e.target.closest("button");if(!b)return;
+  [...$("tabs").children].forEach(x=>x.classList.toggle("on",x===b));filter=b.dataset.f;renderTable();};
+
+/* ---------- IoT ---------- */
+function rssiBars(r){
+  if(r==null)return "";
+  const n=r>-55?4:r>-65?3:r>-75?2:1,col=n>=3?'var(--ok)':n==2?'var(--warn)':'var(--bad)';
+  let b=`<span class="bars" title="Sinyal ${r} dBm">`;for(let i=1;i<=4;i++)b+=`<i style="${i<=n?'background:'+col:''}"></i>`;
+  return b+"</span>";
+}
+// Ringkas untuk kartu: detik hanya di bawah 1 menit; setelahnya menit/jam saja (detail ada di popup).
+function fmtCoarse(s){
+  s=Math.max(0,Math.round(s));if(s<60)return s+"s";
+  const d=Math.floor(s/86400),h=Math.floor(s/3600)%24,m=Math.floor(s/60)%60;
+  return d?`${d}hr ${h}j`:s>=3600?`${Math.floor(s/3600)}j ${m}m`:`${m}m`;
+}
+function fmtAge(s){s=Math.max(0,Math.round(s));const d=Math.floor(s/86400);return d?`${d}hr ${Math.floor(s/3600)%24}j`:fmtSpan(s);}
+function toast(msg){const t=$("toast");t.textContent=msg;t.style.display="block";clearTimeout(toast.t);toast.t=setTimeout(()=>t.style.display="none",4000);}
+/* ---------- Kamera (placeholder; WebRTC menyusul) ---------- */
+const cams=["Kamera 1","Kamera 2","Kamera 3","Kamera 4","Kamera 5","Kamera 6"];
+function showCam(i){
+  [...$("cams").children].forEach((b,k)=>b.classList.toggle("on",k===i));
+  $("camName").textContent=`CAM ${i+1} · ${cams[i]}`;
+  $("view").innerHTML=`<div class="fake"><div><b>CAM ${i+1}</b>stream WebRTC belum tersambung</div></div>`;
+}
+$("cams").innerHTML=cams.map((_,i)=>`<button>${i+1}</button>`).join("");
+$("cams").onclick=e=>{const b=e.target.closest("button");if(b)showCam([...$("cams").children].indexOf(b));};
+
+/* ---------- Data live (SSE) ---------- */
+const es=new EventSource("/api/events");
+es.onopen=()=>{$("link").textContent="live";$("link").className="ok";};
+es.onerror=()=>{$("link").textContent="terputus";$("link").className="bad";};
+es.addEventListener("net",e=>{clients=JSON.parse(e.data)||[];renderTable();});
+es.addEventListener("iot",e=>{iot=JSON.parse(e.data)||[];renderIot();});
+es.addEventListener("power",e=>{const first=!Object.keys(power).length;power=JSON.parse(e.data)||{};if(first)renderIot();updateChips();});
+
+/* ---------- Log daya: badge kompresor + popup grafik ---------- */
+const pad=n=>String(n).padStart(2,"0");
+const hhmm=t=>{const d=new Date(t*1000);return pad(d.getHours())+":"+pad(d.getMinutes());};
+const hhmmss=t=>hhmm(t)+":"+pad(new Date(t*1000).getSeconds());
+function fmtSpan(s){
+  s=Math.max(0,Math.round(s));const h=Math.floor(s/3600),m=Math.floor(s/60)%60,x=s%60;
+  return h?`${h}j ${pad(m)}m`:m?`${m}m ${pad(x)}s`:`${x}s`;
+}
+function chipText(p,detail){
+  const age=Math.max(0,Date.now()/1000-p.since),a=detail?fmtSpan(age):fmtCoarse(age),full=fmtSpan(age);
+  if(p.state=="comp")return["comp","❄ "+a,"Kompresor ON selama "+full];
+  if(p.state=="fan")return["","Fan "+a,"Kompresor mati, fan saja selama "+full];
+  if(p.state=="idle")return["","AC mati "+a,"Relay hidup, AC mati / standby (daya ~0 W) selama "+full];
+  if(p.state=="off")return["","OFF","Relay mati"];
+  return["gap","tak ada data","Tidak ada update mDNS dari perangkat"];
+}
+function updateChips(){
+  document.querySelectorAll("[data-chip]").forEach(el=>{
+    const p=power[el.dataset.chip];if(!p)return;
+    const[c,t,tt]=chipText(p);el.className="chip "+c;el.textContent=t;el.title=tt;
+  });
+}
+setInterval(()=>{updateChips();if(window.tickIot)tickIot();},1000);
+
+let chartId=null,chartHist=null,chartTimer=null;
+const STATE_LBL={comp:"Kompresor ON",fan:"Kompresor OFF (fan saja)",idle:"AC mati (standby)",off:"Relay OFF",gap:"Tidak ada data"};
+let hoursSel=24,view=null,chartSel=null,chartGeom=null;
+function openChart(id){
+  chartId=id;view=null;$("modal").classList.add("open");
+  const d=iot.find(x=>x.id===id);$("mTitle").textContent=(d?d.name:id)+" · log daya";
+  loadChart();clearInterval(chartTimer);chartTimer=setInterval(loadChart,15000);
+  $("mClose").focus();
+}
+function closeChart(){$("modal").classList.remove("open");chartId=null;clearInterval(chartTimer);}
+$("mClose").onclick=closeChart;
+$("modal").onclick=e=>{if(e.target===$("modal"))closeChart();};
+document.addEventListener("keydown",e=>{if(e.key=="Escape"&&chartId)closeChart();});
+$("mRange").onclick=e=>{
+  const b=e.target.closest("button");if(!b)return;
+  hoursSel=+b.dataset.h;view=null;
+  [...$("mRange").children].forEach(x=>x.classList.toggle("on",x===b));loadChart();
+};
+$("mReset").onclick=()=>{view=null;if(chartHist)renderChart(chartHist);};
+// Seleksi zoom: seret di grafik; dilepas di mana saja (window) agar tidak macet bila kursor keluar dari SVG.
+window.addEventListener("mouseup",()=>{
+  const s=chartSel,g=chartGeom;chartSel=null;
+  if(!s||!g||!chartHist)return;
+  const xa=Math.min(s.x0,s.x1),xb=Math.max(s.x0,s.x1);
+  if(xb-xa<8){const r=document.getElementById("mSel");if(r)r.style.display="none";return;}
+  let ta=g.t0+(xa-g.L)/g.pw*g.span,tb=g.t0+(xb-g.L)/g.pw*g.span;
+  if(tb-ta<120){const m=(ta+tb)/2;ta=m-60;tb=m+60;} // minimal 2 menit (resolusi data = 1 menit)
+  view=[Math.max(ta,chartHist.from),Math.min(tb,chartHist.now)];
+  renderChart(chartHist);
+});
+// Statistik untuk rentang zoom, dihitung dari data yang sudah dimuat.
+function zoomStats(h,a,b){
+  const clip=(x0,x1)=>Math.max(0,Math.min(x1,b)-Math.max(x0,a));
+  const st={comp_sec:0,fan_sec:0,idle_sec:0,off_sec:0,gap_sec:0,cycles:0,avg_comp_sec:0,avg_rest_sec:0,duty:0,cycles_per_hour:0,kwh:0,kwh_per_cycle:0,max_w:0};
+  const key={comp:"comp_sec",fan:"fan_sec",idle:"idle_sec",off:"off_sec"};
+  for(const g of h.segs)st[key[g.state]||"gap_sec"]+=clip(g.t0,g.t1);
+  for(const m of h.minutes){const d=clip(m[0],m[0]+60);if(d>0){st.kwh+=m[1]*d/3.6e6;st.max_w=Math.max(st.max_w,m[3]);}}
+  let cd=0,ck=0,nc=0,rd=0,nr=0;
+  h.events.forEach((e,i)=>{
+    if(e.t<a||e.t>b)return;
+    if(e.state=="comp")st.cycles++;
+    if(e.prev=="comp"&&e.state!="gap"){cd+=e.dur;ck+=e.kwh;nc++;}
+    const q=h.events[i-1];
+    if(e.prev=="fan"&&e.state=="comp"&&q&&q.prev=="comp"&&q.state=="fan"){rd+=e.dur;nr++;}
+  });
+  const on=st.comp_sec+st.fan_sec;
+  if(nc){st.avg_comp_sec=cd/nc;st.kwh_per_cycle=ck/nc;}
+  if(nr)st.avg_rest_sec=rd/nr;
+  if(on>0){st.duty=st.comp_sec/on;st.cycles_per_hour=Math.round(st.cycles/(on/3600)*100)/100;}
+  return st;
+}
+async function loadChart(){
+  const id=chartId;if(!id||view)return; // saat di-zoom, jangan menimpa tampilan
+
+  try{
+    const r=await fetch("/api/power/"+encodeURIComponent(id)+"?hours="+hoursSel);
+    if(!r.ok)throw new Error("HTTP "+r.status);
+    const h=await r.json();if(id!==chartId)return;
+    chartHist=h;renderChart(h);
+  }catch(x){$("mLive").textContent="gagal memuat: "+x.message;}
+}
+function renderChart(h){
+  const W=900,H=280,L=46,R=12,T=10,B=24,pw=W-L-R,ph=H-T-B,t0=view?view[0]:h.from,t1=view?view[1]:h.now,span=Math.max(1,t1-t0);
+  chartGeom={L,pw,t0,span};
+  $("mReset").style.display=view?"":"none";
+  if(view)$("mReset").textContent="⟲ Reset zoom ("+hhmm(t0)+"–"+hhmm(t1)+")";
+  const X=t=>L+(Math.min(Math.max(t,t0),t1)-t0)/span*pw;
+  let ymax=Math.max(h.live.comp_on_w*1.4,h.stats.max_w*1.1,100);
+  const ystep=ymax>600?200:100;ymax=Math.ceil(ymax/ystep)*ystep;
+  const Y=v=>T+ph-v/ymax*ph;
+  let s=`<svg viewBox="0 0 ${W} ${H}" id="mSvg" role="img" aria-label="Grafik daya">`;
+  for(const g of h.segs){
+    const c={comp:"sc",off:"so",idle:"si",gap:"sg"}[g.state];if(!c||g.t1<=t0||g.t0>=t1)continue;
+    const x0=X(g.t0),x1=X(g.t1);if(x1>x0)s+=`<rect class="${c}" x="${x0.toFixed(1)}" y="${T}" width="${(x1-x0).toFixed(1)}" height="${ph}"/>`;
+  }
+  for(let v=0;v<=ymax;v+=ystep)s+=`<line class="gl" x1="${L}" x2="${W-R}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${L-6}" y="${Y(v)+4}" text-anchor="end">${v}</text>`;
+  const tstep=[60,120,300,600,900,1800,3600,7200,14400,21600].find(x=>span/x<=8)||21600;
+  const tz=-new Date().getTimezoneOffset()*60;
+  for(let t=Math.ceil((t0+tz)/tstep)*tstep-tz;t<=t1;t+=tstep)
+    s+=`<line class="gl" x1="${X(t)}" x2="${X(t)}" y1="${T}" y2="${T+ph}"/><text x="${X(t)}" y="${H-7}" text-anchor="middle">${hhmm(t)}</text>`;
+  for(const [v] of [[h.live.comp_on_w],[h.live.comp_off_w]])
+    if(v>0&&v<ymax)s+=`<line class="th" x1="${L}" x2="${W-R}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${W-R-2}" y="${Y(v)-3}" text-anchor="end">${v} W</text>`;
+  // garis putus bila selisih antar-menit > 150 dtk (data hilang)
+  const runs=[];let cur=[];
+  for(const m of h.minutes){
+    if(m[0]+60<=t0||m[0]>=t1)continue;
+    if(cur.length&&m[0]-cur[cur.length-1][0]>150){runs.push(cur);cur=[];}
+    cur.push(m);
+  }
+  if(cur.length)runs.push(cur);
+  for(const r of runs){
+    const x=m=>X(m[0]+30).toFixed(1);
+    if(r.length<2){const m=r[0];s+=`<circle cx="${x(m)}" cy="${Y(m[1]).toFixed(1)}" r="2" fill="var(--acc)"/>`;continue;}
+    s+=`<polygon class="band" points="${r.map(m=>x(m)+","+Y(m[3]).toFixed(1)).join(" ")} ${r.slice().reverse().map(m=>x(m)+","+Y(m[2]).toFixed(1)).join(" ")}"/>`;
+    s+=`<polyline class="ln" points="${r.map(m=>x(m)+","+Y(m[1]).toFixed(1)).join(" ")}"/>`;
+  }
+  s+=`<rect id="mSel" class="zs" y="${T}" height="${ph}" style="display:none"/><line id="mCur" class="gl" y1="${T}" y2="${T+ph}" style="stroke:#8b949e;display:none"/></svg><div id="mTip"></div>`;
+  $("mChart").innerHTML=s;
+  const svg=$("mSvg"),tip=$("mTip"),cur2=$("mCur");
+  const selR=$("mSel"),toVx=ev=>{const rc=svg.getBoundingClientRect();return Math.min(Math.max((ev.clientX-rc.left)/rc.width*W,L),W-R);};
+  svg.onmousedown=ev=>{if(ev.button!==0)return;chartSel={x0:toVx(ev),x1:toVx(ev)};ev.preventDefault();};
+  svg.ondblclick=()=>{view=null;chartSel=null;renderChart(chartHist);};
+  svg.onmousemove=ev=>{
+    const rc=svg.getBoundingClientRect(),vx=(ev.clientX-rc.left)/rc.width*W;
+    if(chartSel){
+      chartSel.x1=toVx(ev);
+      selR.setAttribute("x",Math.min(chartSel.x0,chartSel.x1));selR.setAttribute("width",Math.abs(chartSel.x1-chartSel.x0));selR.style.display="";
+    }
+    if(vx<L||vx>W-R){svg.onmouseleave();return;}
+    const t=t0+(vx-L)/pw*span;
+    let best=null,bd=1e9;for(const m of h.minutes){const dd=Math.abs(m[0]+30-t);if(dd<bd){bd=dd;best=m;}}
+    const seg=h.segs.find(g=>t>=g.t0&&t<g.t1);
+    cur2.setAttribute("x1",vx);cur2.setAttribute("x2",vx);cur2.style.display="";
+    let txt=hhmm(t)+" · "+(seg?STATE_LBL[seg.state]||seg.state:"");
+    if(best&&bd<=150)txt+=`<br>${best[1]} W <span style="color:var(--mut)">(min ${best[2]} · maks ${best[3]})</span>`;
+    tip.innerHTML=txt;tip.style.display="block";
+    const px=(vx/W)*rc.width;tip.style.left=Math.min(Math.max(px+12,0),rc.width-tip.offsetWidth-4)+"px";tip.style.top="8px";
+  };
+  svg.onmouseleave=()=>{tip.style.display="none";cur2.style.display="none";};
+  const evAll=view?h.events.filter(e=>e.t>=t0&&e.t<=t1):h.events;
+
+  const p=h.live,st=view?zoomStats(h,t0,t1):h.stats,[,chip]=chipText(p,true);
+  $("mLive").textContent=`${Math.round(p.power)} W · ${p.voltage.toFixed(0)} V · ${p.current.toFixed(2)} A · ${chip}`;
+  const tile=(l,v,sub)=>`<div class="tile"><small>${l}</small><b>${v}</b><span title="${esc(sub)}">${esc(sub)}</span></div>`;
+  const on=st.comp_sec+st.fan_sec;
+  $("mTiles").innerHTML=
+    tile("Siklus kompresor",st.cycles,st.cycles_per_hour+" per jam relay hidup")+
+    tile("Rata-rata menyala",st.avg_comp_sec?fmtSpan(st.avg_comp_sec):"-","per siklus selesai")+
+    tile("Rata-rata istirahat",st.avg_rest_sec?fmtSpan(st.avg_rest_sec):"-","antar siklus")+
+    tile("Duty kompresor",on?Math.round(st.duty*100)+"%":"-",on?fmtSpan(st.comp_sec)+" dari "+fmtSpan(on):"relay belum hidup")+
+    tile("Energi",st.kwh.toFixed(2)+" kWh","dalam rentang ini")+
+    tile("Per siklus",st.kwh_per_cycle?st.kwh_per_cycle.toFixed(3)+" kWh":"-","rata-rata energi kompresor")+
+    tile("Daya maksimum",Math.round(st.max_w)+" W","puncak sampel dalam rentang ini")+
+    tile("Tanpa data",fmtSpan(st.gap_sec),"tidak diisi/ditebak");
+  $("mEvents").innerHTML=evAll.slice().reverse().slice(0,40).map(e=>{
+    let x=`<span class="mono">${hhmmss(e.t)}</span> `;
+    x+=e.state=="comp"?"<b style='color:var(--acc)'>Kompresor ON</b>":e.state=="fan"?(e.prev=="comp"?"Kompresor OFF":"Fan saja"):e.state=="idle"?"AC mati (standby)":e.state=="off"?"Relay OFF":"<span style='color:var(--bad)'>Data terputus</span>";
+    if(e.prev=="comp")x+=` <span class="mono">(menyala ${fmtSpan(e.dur)}, ${e.kwh} kWh)</span>`;
+    else if(e.prev=="fan"&&e.state=="comp")x+=` <span class="mono">(istirahat ${fmtSpan(e.dur)})</span>`;
+    return "<li>"+x+"</li>";
+  }).join("")||'<li class="mono">belum ada kejadian</li>';
+  const a=p.pushed,b=p.replied;
+  $("mNote").innerHTML=`Update mDNS sejak dashboard jalan: <b style="color:var(--txt)">${a}</b> spontan dari perangkat, <b style="color:var(--txt)">${b}</b> balasan query.<br>`+
+    (a+b===0?"Belum ada update yang diterima.":a===0?"Perangkat tampaknya hanya menjawab query, jadi resolusi data = selang query (30 dtk).":"Perangkat mengirim update sendiri saat daya berubah.")+
+    `<br>Disimpan di router: mentah 3 hari, rekap menit 2 tahun, kejadian permanen.`;
+}
+
+const tick=()=>$("clock").textContent=new Date().toLocaleString("id-ID");
+setInterval(tick,1000);tick();
+renderTable();showCam(0);
+</script>
+<script src="iot.js"></script>
+</body>
+</html>

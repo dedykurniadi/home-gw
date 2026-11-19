@@ -1,0 +1,7 @@
+.claude/settings.local.json
+data/
+*.db
+*.db-*
+*-armv7
+*.exe
+dashboard
