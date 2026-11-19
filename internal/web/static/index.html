@@ -211,13 +211,38 @@ function showCam(i){
 $("cams").innerHTML=cams.map((_,i)=>`<button>${i+1}</button>`).join("");
 $("cams").onclick=e=>{const b=e.target.closest("button");if(b)showCam([...$("cams").children].indexOf(b));};
 
-/* ---------- Data live (SSE) ---------- */
-const es=new EventSource("/api/events");
-es.onopen=()=>{$("link").textContent="live";$("link").className="ok";};
-es.onerror=()=>{$("link").textContent="terputus";$("link").className="bad";};
-es.addEventListener("net",e=>{clients=JSON.parse(e.data)||[];renderTable();});
-es.addEventListener("iot",e=>{iot=JSON.parse(e.data)||[];renderIot();});
-es.addEventListener("power",e=>{const first=!Object.keys(power).length;power=JSON.parse(e.data)||{};if(first)renderIot();updateChips();});
+/* ---------- Data live (WebSocket) ---------- */
+let ws=null,wsTimer=null;
+function connectWS(){
+  if(wsTimer){clearTimeout(wsTimer);wsTimer=null;}
+  const proto=location.protocol==="https:"?"wss:":"ws:";
+  ws=new WebSocket(proto+"//"+location.host+"/api/ws");
+  window.appWS=ws;
+  ws.onopen=()=>{
+    $("link").textContent="live";$("link").className="ok";
+  };
+  ws.onclose=()=>{
+    $("link").textContent="terputus";$("link").className="bad";
+    if(!wsTimer)wsTimer=setTimeout(connectWS,2000);
+  };
+  ws.onerror=()=>{
+    $("link").textContent="terputus";$("link").className="bad";
+    try{ws.close();}catch(_){}
+  };
+  ws.onmessage=e=>{
+    try{
+      const msg=JSON.parse(e.data);
+      if(msg.type==="net"){clients=msg.data||[];renderTable();}
+      else if(msg.type==="iot"){iot=msg.data||[];renderIot();}
+      else if(msg.type==="power"){const first=!Object.keys(power).length;power=msg.data||{};if(first)renderIot();updateChips();}
+      else if(msg.type==="error"&&msg.data){
+        if(window.handleWSError)window.handleWSError(msg.data.id,msg.data.error);
+        else if(msg.data.error)toast("Gagal: "+msg.data.error);
+      }
+    }catch(x){}
+  };
+}
+connectWS();
 
 /* ---------- Log daya: badge kompresor + popup grafik ---------- */
 const pad=n=>String(n).padStart(2,"0");

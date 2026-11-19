@@ -57,10 +57,20 @@ function updateSince(){
   });
 }
 function tickIot(){updateSince();}
+window.handleWSError=function(id,err){
+  if(id&&pend[id]){delete pend[id];renderIot();}
+  toast("Gagal: "+err);
+};
 async function toggleDev(id){
   const d=devOf(id);if(!d||!d.online||pend[id])return;
   pend[id]={t:Date.now(),from:d.state};renderIot();
-  try{await send("POST","/api/iot/"+encodeURIComponent(id),{cmd:"toggle"});}
+  try{
+    if(window.appWS&&window.appWS.readyState===WebSocket.OPEN){
+      window.appWS.send(JSON.stringify({action:"toggle",id:id}));
+    }else{
+      await send("POST","/api/iot/"+encodeURIComponent(id),{cmd:"toggle"});
+    }
+  }
   catch(x){toast("Gagal: "+x.message);delete pend[id];}
   setTimeout(()=>{if(pend[id]){delete pend[id];renderIot();}},5200);
   renderIot();
@@ -672,7 +682,11 @@ function buildAdd() {
     $("bScan").disabled = true;
     $("bScan").textContent = "⏳ Memindai...";
     try {
-      await send("POST", "/api/devices/discover");
+      if(window.appWS&&window.appWS.readyState===WebSocket.OPEN){
+        window.appWS.send(JSON.stringify({action:"discover"}));
+      }else{
+        await send("POST", "/api/devices/discover");
+      }
       await loadDiscovered();
     } catch (x) {
       toast("Gagal query mDNS: " + x.message);

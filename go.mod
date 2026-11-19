@@ -2,7 +2,10 @@ module owrt-dashboard
 
 go 1.26.0
 
-require modernc.org/sqlite v1.62.0
+require (
+	github.com/gorilla/websocket v1.5.3
+	modernc.org/sqlite v1.62.0
+)
 
 require (
 	github.com/dustin/go-humanize v1.1.0 // indirect

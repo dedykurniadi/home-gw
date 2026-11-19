@@ -2,13 +2,17 @@ package web
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 
 	"owrt-dashboard/internal/sonoff"
 )
@@ -122,6 +126,108 @@ func TestStateAndSSE(t *testing.T) {
 			}
 		case <-deadline:
 			t.Fatal("event publish tidak sampai")
+		}
+	}
+}
+
+func TestWebSocket(t *testing.T) {
+	var mu sync.Mutex
+	var gotID, gotCmd string
+	srv, hub := testServer(t, func(id, cmd string) error {
+		mu.Lock()
+		gotID, gotCmd = id, cmd
+		mu.Unlock()
+		if id == "rusak" {
+			return errors.New("perangkat rusak")
+		}
+		return nil
+	})
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/ws"
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial ws: %v", err)
+	}
+	defer ws.Close()
+
+	type msg struct {
+		Type string          `json:"type"`
+		Data json.RawMessage `json:"data"`
+	}
+
+	msgs := make(chan msg, 32)
+	go func() {
+		for {
+			var m msg
+			if err := ws.ReadJSON(&m); err != nil {
+				return
+			}
+			msgs <- m
+		}
+	}()
+
+	want := map[string]bool{"net": false, "iot": false}
+	deadline := time.After(2 * time.Second)
+	for !(want["net"] && want["iot"]) {
+		select {
+		case m := <-msgs:
+			if _, ok := want[m.Type]; ok {
+				want[m.Type] = true
+			}
+		case <-deadline:
+			t.Fatalf("pesan awal websocket tidak lengkap: %v", want)
+		}
+	}
+
+	// Test broadcast
+	hub.Publish("iot", []string{"ws-baru"})
+	received := false
+	for !received {
+		select {
+		case m := <-msgs:
+			if m.Type == "iot" && strings.Contains(string(m.Data), "ws-baru") {
+				received = true
+			}
+		case <-deadline:
+			t.Fatal("publish via websocket tidak sampai")
+		}
+	}
+
+	// Test action control
+	if err := ws.WriteJSON(map[string]string{"action": "control", "id": "test1", "cmd": "on"}); err != nil {
+		t.Fatalf("kirim action control: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	if gotID != "test1" || gotCmd != "on" {
+		t.Fatalf("kontrol tidak terpanggil dengan benar: id=%s cmd=%s", gotID, gotCmd)
+	}
+	mu.Unlock()
+
+	// Test action toggle
+	if err := ws.WriteJSON(map[string]string{"action": "toggle", "id": "test2"}); err != nil {
+		t.Fatalf("kirim action toggle: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	if gotID != "test2" || gotCmd != "toggle" {
+		t.Fatalf("toggle tidak terpanggil dengan benar: id=%s cmd=%s", gotID, gotCmd)
+	}
+	mu.Unlock()
+
+	// Test error response
+	if err := ws.WriteJSON(map[string]string{"action": "control", "id": "rusak", "cmd": "off"}); err != nil {
+		t.Fatalf("kirim action rusak: %v", err)
+	}
+	gotErr := false
+	for !gotErr {
+		select {
+		case m := <-msgs:
+			if m.Type == "error" && strings.Contains(string(m.Data), "perangkat rusak") {
+				gotErr = true
+			}
+		case <-deadline:
+			t.Fatal("error response tidak diterima via websocket")
 		}
 	}
 }

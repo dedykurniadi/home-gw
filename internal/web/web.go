@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"owrt-dashboard/internal/sonoff"
 )
 
@@ -74,14 +76,41 @@ type event struct {
 	data []byte
 }
 
-// Hub menyebarkan event ke semua klien SSE. Tiap event membawa state lengkap,
-// jadi event lama yang terbuang saat klien lambat tidak masalah.
-type Hub struct {
-	mu   sync.Mutex
-	subs map[chan event]struct{}
+type wsClient struct {
+	hub  *Hub
+	conn *websocket.Conn
+	send chan []byte
 }
 
-func NewHub() *Hub { return &Hub{subs: map[chan event]struct{}{}} }
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 4096,
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
+
+const (
+	wsWriteWait  = 10 * time.Second
+	wsPongWait   = 60 * time.Second
+	wsPingPeriod = (wsPongWait * 9) / 10
+	wsMaxMessage = 4096
+)
+
+// Hub menyebarkan event ke semua klien SSE dan WebSocket. Tiap event membawa state lengkap,
+// jadi event lama yang terbuang saat klien lambat tidak masalah.
+type Hub struct {
+	mu        sync.Mutex
+	subs      map[chan event]struct{}
+	wsClients map[*wsClient]struct{}
+}
+
+func NewHub() *Hub {
+	return &Hub{
+		subs:      map[chan event]struct{}{},
+		wsClients: map[*wsClient]struct{}{},
+	}
+}
 
 func (h *Hub) subscribe() chan event {
 	ch := make(chan event, 16)
@@ -97,12 +126,113 @@ func (h *Hub) unsubscribe(ch chan event) {
 	h.mu.Unlock()
 }
 
+func (h *Hub) registerWS(c *wsClient) {
+	h.mu.Lock()
+	h.wsClients[c] = struct{}{}
+	h.mu.Unlock()
+}
+
+func (h *Hub) unregisterWS(c *wsClient) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.wsClients[c]; ok {
+		delete(h.wsClients, c)
+		close(c.send)
+	}
+}
+
+func (c *wsClient) readPump(h Handlers) {
+	defer func() {
+		c.hub.unregisterWS(c)
+		c.conn.Close()
+	}()
+	c.conn.SetReadLimit(wsMaxMessage)
+	c.conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	c.conn.SetPongHandler(func(string) error {
+		c.conn.SetReadDeadline(time.Now().Add(wsPongWait))
+		return nil
+	})
+	for {
+		_, msg, err := c.conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		var req struct {
+			Action string `json:"action"`
+			ID     string `json:"id"`
+			Cmd    string `json:"cmd"`
+		}
+		if err := json.Unmarshal(msg, &req); err != nil {
+			continue
+		}
+		switch req.Action {
+		case "control", "toggle":
+			cmd := req.Cmd
+			if req.Action == "toggle" && cmd == "" {
+				cmd = "toggle"
+			}
+			if h.Control != nil && req.ID != "" {
+				if err := h.Control(req.ID, cmd); err != nil {
+					errResp, _ := json.Marshal(map[string]any{
+						"type": "error",
+						"data": map[string]string{"id": req.ID, "error": err.Error()},
+					})
+					select {
+					case c.send <- errResp:
+					default:
+					}
+				}
+			}
+		case "discover":
+			if h.Discover != nil {
+				h.Discover()
+			}
+		}
+	}
+}
+
+func (c *wsClient) writePump() {
+	ticker := time.NewTicker(wsPingPeriod)
+	defer func() {
+		ticker.Stop()
+		c.conn.Close()
+	}()
+	for {
+		select {
+		case msg, ok := <-c.send:
+			c.conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
+			if !ok {
+				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+			w, err := c.conn.NextWriter(websocket.TextMessage)
+			if err != nil {
+				return
+			}
+			w.Write(msg)
+			if err := w.Close(); err != nil {
+				return
+			}
+		case <-ticker.C:
+			c.conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		}
+	}
+}
+
 func (h *Hub) Publish(name string, v any) {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return
 	}
 	ev := event{name, data}
+	wsMsg, _ := json.Marshal(map[string]any{
+		"type": name,
+		"data": json.RawMessage(data),
+	})
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for ch := range h.subs {
@@ -115,6 +245,20 @@ func (h *Hub) Publish(name string, v any) {
 			}
 			select {
 			case ch <- ev:
+			default:
+			}
+		}
+	}
+	for client := range h.wsClients {
+		select {
+		case client.send <- wsMsg:
+		default:
+			select {
+			case <-client.send:
+			default:
+			}
+			select {
+			case client.send <- wsMsg:
 			default:
 			}
 		}
@@ -249,6 +393,41 @@ func New(h Handlers, hub *Hub) http.Handler {
 		}
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, 200, data)
+	})
+
+	mux.HandleFunc("/api/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		client := &wsClient{
+			hub:  hub,
+			conn: conn,
+			send: make(chan []byte, 32),
+		}
+		hub.registerWS(client)
+
+		initial := map[string]func() any{"iot": h.IoT}
+		if h.Net != nil {
+			initial["net"] = h.Net
+		}
+		if h.Power != nil {
+			initial["power"] = h.Power
+		}
+		for name, get := range initial {
+			data, _ := json.Marshal(get())
+			wsData, _ := json.Marshal(map[string]any{
+				"type": name,
+				"data": json.RawMessage(data),
+			})
+			select {
+			case client.send <- wsData:
+			default:
+			}
+		}
+
+		go client.writePump()
+		go client.readPump(h)
 	})
 
 	mux.HandleFunc("/api/events", func(w http.ResponseWriter, r *http.Request) {

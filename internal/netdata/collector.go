@@ -161,11 +161,15 @@ func (c *Collector) Run(ctx context.Context) {
 			}
 			c.cycle()
 		case <-c.kickCh:
-			// beri hostapd sebentar memperbarui daftar station, lalu baca; jeda minimum antar siklus kejadian
-			time.Sleep(400 * time.Millisecond)
+			// beri hostapd waktu singkat (50ms) memperbarui daftar station
+			time.Sleep(50 * time.Millisecond)
+			select {
+			case <-c.kickCh:
+			default:
+			}
 			c.refreshWifi()
 			c.cycle()
-			time.Sleep(600 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 		}
 	}
 }
@@ -241,7 +245,7 @@ func (c *Collector) cycle() {
 		for _, r := range rows {
 			ips = append(ips, r.IP)
 		}
-		res = c.pinger.Ping(ips, 1, time.Second)
+		res = c.pinger.Ping(ips, 1, 500*time.Millisecond)
 	}
 	c.arpUp = c.probeWired()
 	c.applyPing(rows, res, c.pinger != nil)
