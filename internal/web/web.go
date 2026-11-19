@@ -2,7 +2,6 @@
 package web
 
 import (
-	"bytes"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -13,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"owrt-dashboard/internal/sonoff"
 )
 
 //go:embed static
@@ -33,11 +34,9 @@ type ConfigReq struct {
 var ErrNotFound = errors.New("tidak ditemukan")
 
 type Handlers struct {
-	// Net (opsional): tabel client jaringan. nil = tanpa jaringan (mode hanya-IoT).
+	// Net (opsional): tabel client jaringan. nil = tanpa jaringan.
 	Net func() any
 	IoT func() any
-	// IoTOnly menyajikan tampilan hanya-IoT (tanpa tabel client dan kamera).
-	IoTOnly bool
 	// Sched (opsional): penjadwalan otomatis, dilayani di /api/sched.
 	Sched   http.Handler
 	Control func(id, cmd string) error
@@ -57,6 +56,17 @@ type Handlers struct {
 	Power func() any
 	// PowerHistory (opsional): data grafik untuk satu perangkat; ok=false bila tidak ada log-nya.
 	PowerHistory func(id string, hours int) (any, bool)
+
+	// DiscoveredDevices (opsional): daftar perangkat mDNS yang ditemukan di LAN tapi belum diadopsi.
+	DiscoveredDevices func() any
+	// Discover (opsional): picu query mDNS baru untuk mencari perangkat.
+	Discover func()
+	// AddDevice (opsional): simpan/adopsi perangkat baru ke database dan manager.
+	AddDevice func(d sonoff.Device) error
+	// DeleteDevice (opsional): hapus perangkat dari database dan manager.
+	DeleteDevice func(id string) error
+	// Devices (opsional): daftar konfigurasi perangkat tersimpan.
+	Devices func() any
 }
 
 type event struct {
@@ -121,23 +131,8 @@ func New(h Handlers, hub *Hub) http.Handler {
 	mux := http.NewServeMux()
 	sub, _ := fs.Sub(staticFS, "static")
 	files := http.FileServer(http.FS(sub))
-	var iotIndex []byte
-	if h.IoTOnly {
-		b, err := fs.ReadFile(sub, "index.html")
-		if err == nil {
-			b = bytes.Replace(b, []byte("<body>"), []byte(`<body class="iot-only">`), 1)
-			b = bytes.Replace(b, []byte("<title>Network Dashboard</title>"), []byte("<title>IoT Dashboard</title>"), 1)
-			b = bytes.Replace(b, []byte("🌐 Network Dashboard"), []byte("⚡ IoT Dashboard"), 1)
-			iotIndex = b
-		}
-	}
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
-		if iotIndex != nil && (r.URL.Path == "/" || r.URL.Path == "/index.html") {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.Write(iotIndex)
-			return
-		}
 		files.ServeHTTP(w, r)
 	}))
 
@@ -364,6 +359,101 @@ func New(h Handlers, hub *Hub) http.Handler {
 		default:
 			writeJSON(w, 502, map[string]string{"error": err.Error()})
 		}
+	})
+
+	if h.DiscoveredDevices != nil {
+		mux.HandleFunc("/api/devices/discovered", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-store")
+			writeJSON(w, 200, h.DiscoveredDevices())
+		})
+	}
+	if h.Discover != nil {
+		mux.HandleFunc("/api/devices/discover", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost || r.Header.Get("X-Dashboard") != "1" {
+				writeJSON(w, 403, map[string]string{"error": "POST dengan header X-Dashboard diperlukan"})
+				return
+			}
+			h.Discover()
+			writeJSON(w, 200, map[string]string{"ok": "true"})
+		})
+	}
+	mux.HandleFunc("/api/devices", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			if h.Devices != nil {
+				w.Header().Set("Cache-Control", "no-store")
+				writeJSON(w, 200, h.Devices())
+				return
+			}
+			writeJSON(w, 404, map[string]string{"error": "tidak didukung"})
+		case http.MethodPost:
+			if h.AddDevice == nil {
+				writeJSON(w, 404, map[string]string{"error": "tambah perangkat nonaktif"})
+				return
+			}
+			if r.Header.Get("X-Dashboard") != "1" {
+				writeJSON(w, 403, map[string]string{"error": "POST dengan header X-Dashboard diperlukan"})
+				return
+			}
+			var d sonoff.Device
+			dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&d); err != nil {
+				writeJSON(w, 400, map[string]string{"error": "JSON tidak valid"})
+				return
+			}
+			d.ID = strings.TrimSpace(d.ID)
+			d.Name = strings.TrimSpace(d.Name)
+			d.Key = strings.TrimSpace(d.Key)
+			if d.ID == "" {
+				writeJSON(w, 400, map[string]string{"error": "ID perangkat wajib diisi"})
+				return
+			}
+			if d.Name == "" {
+				writeJSON(w, 400, map[string]string{"error": "Nama perangkat wajib diisi"})
+				return
+			}
+			if d.Key == "" {
+				writeJSON(w, 400, map[string]string{"error": "Device Key wajib diisi"})
+				return
+			}
+			if d.Kind == "" {
+				d.Kind = "switch"
+			}
+			if err := h.AddDevice(d); err != nil {
+				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, 200, map[string]any{"ok": true, "device": d})
+		default:
+			w.Header().Set("Allow", "GET, POST")
+			writeJSON(w, 405, map[string]string{"error": "metode tidak diizinkan"})
+		}
+	})
+	mux.HandleFunc("/api/devices/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			w.Header().Set("Allow", "DELETE")
+			writeJSON(w, 405, map[string]string{"error": "gunakan DELETE"})
+			return
+		}
+		if r.Header.Get("X-Dashboard") != "1" {
+			writeJSON(w, 403, map[string]string{"error": "DELETE dengan header X-Dashboard diperlukan"})
+			return
+		}
+		if h.DeleteDevice == nil {
+			writeJSON(w, 404, map[string]string{"error": "hapus perangkat nonaktif"})
+			return
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/api/devices/")
+		if id == "" {
+			writeJSON(w, 400, map[string]string{"error": "ID perangkat tidak valid"})
+			return
+		}
+		if err := h.DeleteDevice(id); err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]string{"ok": "true"})
 	})
 	return mux
 }

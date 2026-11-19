@@ -2,6 +2,6 @@
 data/
 *.db
 *.db-*
-*-armv7
+*-armv7*
 *.exe
 dashboard

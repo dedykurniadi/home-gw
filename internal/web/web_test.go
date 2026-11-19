@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"owrt-dashboard/internal/sonoff"
 )
 
 func testServer(t *testing.T, ctl func(id, cmd string) error) (*httptest.Server, *Hub) {
@@ -278,37 +280,68 @@ func TestEnergyEndpoint(t *testing.T) {
 	r2.Body.Close()
 }
 
-func TestIoTOnlyMode(t *testing.T) {
+func TestDeviceEndpoints(t *testing.T) {
+	var added sonoff.Device
+	var deleted string
+	var discoveredCalls int
+
 	hub := NewHub()
 	srv := httptest.NewServer(New(Handlers{
-		IoT: func() any { return []int{} }, IoTOnly: true,
-		Control: func(id, cmd string) error { return nil },
+		DiscoveredDevices: func() any {
+			return []sonoff.Discovered{{ID: "disc1", IP: "10.0.0.2"}}
+		},
+		Discover: func() {
+			discoveredCalls++
+		},
+		AddDevice: func(d sonoff.Device) error {
+			added = d
+			return nil
+		},
+		DeleteDevice: func(id string) error {
+			deleted = id
+			return nil
+		},
+		Devices: func() any {
+			return []sonoff.Device{{ID: "dev1", Name: "D1"}}
+		},
 	}, hub))
 	defer srv.Close()
-	get := func(p string) string {
-		resp, err := http.Get(srv.URL + p)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		b, _ := io.ReadAll(resp.Body)
-		return string(b)
+
+	// GET /api/devices/discovered
+	resp, err := http.Get(srv.URL + "/api/devices/discovered")
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("discovered: %v %v", err, resp)
 	}
-	idx := get("/")
-	if !strings.Contains(idx, `<body class="iot-only">`) || !strings.Contains(idx, "<title>IoT Dashboard</title>") {
-		t.Fatal("index harus bermode hanya-IoT")
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(b), "disc1") {
+		t.Fatalf("discovered harus memuat disc1: %s", b)
 	}
-	if st := get("/api/state"); strings.Contains(st, "clients") || !strings.Contains(st, `"iot"`) {
-		t.Fatalf("state tanpa clients: %s", st)
+
+	// POST /api/devices/discover tanpa header
+	if st := post(t, srv.URL+"/api/devices/discover", "", false); st != 403 {
+		t.Fatalf("discover tanpa header harus 403, dapat %d", st)
 	}
-	resp, err := http.Get(srv.URL + "/api/events")
-	if err != nil {
-		t.Fatal(err)
+	// POST /api/devices/discover dengan header
+	if st := post(t, srv.URL+"/api/devices/discover", "", true); st != 200 || discoveredCalls != 1 {
+		t.Fatalf("discover gagal: st=%d calls=%d", st, discoveredCalls)
 	}
-	defer resp.Body.Close()
-	buf := make([]byte, 256)
-	n, _ := resp.Body.Read(buf)
-	if strings.Contains(string(buf[:n]), "event: net") {
-		t.Fatalf("SSE tidak boleh memuat net: %s", buf[:n])
+
+	// POST /api/devices untuk tambah / adopsi perangkat
+	body := `{"id":"1000c47454","name":"Lampu Teras","key":"1234567890abcdef1234567890abcdef","kind":"switch"}`
+	if st := post(t, srv.URL+"/api/devices", body, false); st != 403 {
+		t.Fatalf("POST devices tanpa header harus 403, dapat %d", st)
 	}
+	if st := post(t, srv.URL+"/api/devices", body, true); st != 200 || added.ID != "1000c47454" || added.Name != "Lampu Teras" {
+		t.Fatalf("POST devices gagal: st=%d added=%+v", st, added)
+	}
+
+	// DELETE /api/devices/{id}
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/devices/1000c47454", nil)
+	req.Header.Set("X-Dashboard", "1")
+	delResp, err := http.DefaultClient.Do(req)
+	if err != nil || delResp.StatusCode != 200 || deleted != "1000c47454" {
+		t.Fatalf("DELETE devices gagal: %v st=%v deleted=%s", err, delResp, deleted)
+	}
+	delResp.Body.Close()
 }

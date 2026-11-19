@@ -72,6 +72,7 @@ $("iot").addEventListener("click",e=>{
 $("iot").addEventListener("keydown",e=>{
   if((e.key=="Enter"||e.key==" ")&&e.target.classList.contains("dv")){e.preventDefault();openSheet("detail",e.target.dataset.id);}
 });
+if($("bAddDev"))$("bAddDev").onclick=()=>openSheet("add");
 $("bScene").onclick=()=>openSheet("scene");
 $("bRep").onclick=()=>openSheet("report");
 $("eTot").onclick=()=>openSheet("report");$("eTot").style.cursor="pointer";
@@ -97,6 +98,7 @@ function openSheet(kind,arg){
   $("sheet").classList.add("open");
   if(kind=="detail"){buildDetail();}
   else if(kind=="scene"){S.tab="preset";buildScene();}
+  else if(kind=="add"){buildAdd();}
   else{S.rid="all";S.sel=null;buildReport();}
 }
 $("sheet").addEventListener("mousedown",e=>{if(e.target===$("sheet"))closeSheet();});
@@ -278,7 +280,7 @@ function buildSettings(d){
   const dis=!d.configurable;S.cfgDis=dis;
   const dev=$("dWrap");
   const sc=((S.data.sc&&S.data.sc.scenes)||[]).filter(x=>(x.actions||[]).some(a=>a.device==d.id));
-  dev.innerHTML=`<div class="card g" id="dA"></div><div class="card g" id="dScn"></div><div class="card g" id="dSet"></div><div class="card g" id="dEn"></div><div class="card g" id="dInf"></div>`;
+  dev.innerHTML=`<div class="card g" id="dA"></div><div class="card g" id="dScn"></div><div class="card g" id="dSet"></div><div class="card g" id="dEn"></div><div class="card g" id="dInf"></div><div class="card g" id="dDel"></div>`;
   $("dA").innerHTML=FR("Nama perangkat",`<span class="ro">${esc(d.name)}</span>`)+FR("Versi firmware",esc(d.fw||"-"));
   $("dScn").innerHTML=FR("Scene",sc.length?sc.map(x=>`<button type="button" class="pill" data-gsc>${esc(x.name)}</button>`).join(""):'<span class="mut">—</span>');
   $("dScn").querySelectorAll("[data-gsc]").forEach(b=>b.onclick=()=>openSheet("scene"));
@@ -316,6 +318,15 @@ function buildSettings(d){
   };
   $("fLe").onclick=e=>{if(!e.target.closest(".tg")||dis)return;post({led:devOf(S.id).led=="off"?"on":"off"});};
   $("fLog").onclick=()=>{const t=document.querySelector('[data-tab=log]');if(t)t.click();};
+  $("dDel").innerHTML=`<div class="row sb"><div><b style="color:var(--bad)">Hapus Perangkat</b><div class="note" style="margin:2px 0 0">Hapus perangkat ini dari database SQLite</div></div><button type="button" class="btn bad" id="bDelDev">Hapus</button></div>`;
+  $("bDelDev").onclick=async()=>{
+    if(!confirm(`Hapus perangkat "${d.name}" (${d.id})? Perangkat dapat diadopsi kembali lewat mDNS nanti.`))return;
+    try{
+      await api("/api/devices/"+encodeURIComponent(d.id),{method:"DELETE",headers:{"X-Dashboard":"1"}});
+      closeSheet();
+      toast("Perangkat "+d.name+" berhasil dihapus");
+    }catch(x){toast("Gagal menghapus: "+x.message);}
+  };
 }
 function fillEnergy(){
   if(S.enDirty||!$("eN"))return;
@@ -510,6 +521,210 @@ function renderReport(){
   const b=$("sBody"),top=b.scrollTop;b.innerHTML=h;b.scrollTop=top;
   $("rDev").onchange=e=>{S.rid=e.target.value;renderReport();};
   b.querySelectorAll("[data-mo]").forEach(x=>x.onclick=()=>{S.sel=x.dataset.mo;renderReport();});
+}
+
+/* ---------- Tambah / Discovery / Adopsi Perangkat ---------- */
+let discoveredList = [];
+
+async function loadDiscovered() {
+  try {
+    discoveredList = await api("/api/devices/discovered");
+    renderDiscovered();
+  } catch (x) {}
+}
+
+function renderDiscovered() {
+  const el = $("discList");
+  if (!el) return;
+  if (!discoveredList || !discoveredList.length) {
+    el.innerHTML = `
+      <div class="mut small" style="padding:14px;text-align:center;background:var(--bg);border-radius:12px;border:1px dashed var(--line)">
+        📡 Belum ada perangkat Sonoff baru terdeteksi via mDNS.<br>
+        <span class="xs" style="color:var(--mut)">Pastikan perangkat Sonoff menyala di jaringan WiFi LAN yang sama.</span>
+      </div>`;
+    return;
+  }
+  el.innerHTML = discoveredList.map(d => `
+    <div class="card" style="border-color:var(--acc);background:rgba(88,166,255,0.06);padding:12px">
+      <div class="row sb">
+        <div>
+          <b style="font-size:14px">${esc(d.id)}</b>
+          <span class="badge" style="color:var(--acc);border-color:var(--acc);margin-left:6px">${esc(d.type || "Sonoff")}</span>
+        </div>
+        <button type="button" class="btn pri" data-adopt="${esc(d.id)}" style="min-height:28px;padding:3px 12px">Adopsi</button>
+      </div>
+      <div class="mut xs" style="display:flex;gap:12px;margin-top:6px;flex-wrap:wrap">
+        <span>IP: <b class="mono" style="color:var(--txt)">${esc(d.ip || "-")}</b></span>
+        ${d.mac ? `<span>MAC: <b class="mono" style="color:var(--txt)">${esc(d.mac.toUpperCase())}</b></span>` : ""}
+        <span>Terlihat: ${fmtAge(Date.now()/1000 - d.last_seen)} lalu</span>
+      </div>
+    </div>
+  `).join("");
+
+  el.querySelectorAll("[data-adopt]").forEach(btn => {
+    btn.onclick = () => {
+      const id = btn.dataset.adopt;
+      const target = discoveredList.find(x => x.id === id);
+      if (!target) return;
+      selectAdopt(target);
+    };
+  });
+}
+
+function selectAdopt(d) {
+  $("formTtl").textContent = "Adopsi Perangkat: " + d.id;
+  $("fDevId").value = d.id;
+  $("fDevId").disabled = true;
+  $("fDevIp").value = d.ip || "";
+  $("fDevMac").value = (d.mac || "").toUpperCase();
+  if (d.type && d.type.includes("switches")) {
+    $("fDevKind").value = "switches";
+  } else {
+    $("fDevKind").value = "switch";
+  }
+  $("fDevName").focus();
+  $("btnManualMode").style.display = "inline-block";
+}
+
+function resetManualForm() {
+  $("formTtl").textContent = "Tambah Perangkat Baru";
+  $("fDevId").value = "";
+  $("fDevId").disabled = false;
+  $("fDevName").value = "";
+  $("fDevKey").value = "";
+  $("fDevIp").value = "";
+  $("fDevMac").value = "";
+  $("fDevKind").value = "switch";
+  $("fDevWatt").value = "";
+  $("fDevStandby").value = "";
+  $("btnManualMode").style.display = "none";
+}
+
+function buildAdd() {
+  shell(head("Tambah Perangkat IoT", "mDNS Discovery & Adopsi"));
+  const b = $("sBody");
+  b.innerHTML = `
+    <div class="card">
+      <div class="row sb" style="margin-bottom:4px">
+        <h3>🔍 Perangkat Ditemukan (mDNS)</h3>
+        <button type="button" class="btn" id="bScan" style="min-height:28px;padding:3px 10px;font-size:12px">🔄 Cari Ulang</button>
+      </div>
+      <div id="discList" style="display:flex;flex-direction:column;gap:8px">
+        <div class="mut small" style="padding:10px;text-align:center">Memuat perangkat ditemukan...</div>
+      </div>
+    </div>
+
+    <div class="card" id="formCard">
+      <div class="row sb" style="margin-bottom:8px">
+        <h3 id="formTtl">Form Adopsi & Pengaturan</h3>
+        <button type="button" class="btn" id="btnManualMode" style="display:none;min-height:26px;padding:2px 8px;font-size:11px">Mode Manual</button>
+      </div>
+      <form id="fAddDev" style="display:flex;flex-direction:column;gap:10px" onsubmit="return false">
+        <div>
+          <div class="frow" style="margin-bottom:4px"><span class="lb">ID Perangkat</span><span class="ds">ID unik eWeLink</span></div>
+          <input type="text" id="fDevId" class="sel" placeholder="Contoh: 1000c47454" required>
+        </div>
+        <div>
+          <div class="frow" style="margin-bottom:4px"><span class="lb">Nama Perangkat</span><span class="ds">Nama tampilan</span></div>
+          <input type="text" id="fDevName" class="sel" placeholder="Contoh: Lampu Teras, AC Kamar" required>
+        </div>
+        <div>
+          <div class="frow" style="margin-bottom:4px"><span class="lb">Device Key (API Key)</span><span class="ds">32 karakter hex</span></div>
+          <input type="text" id="fDevKey" class="sel mono" placeholder="Kunci enkripsi LAN dari aplikasi eWeLink" required autocomplete="off">
+          <div class="mut xs" style="margin-top:3px">Kunci enkripsi diperoleh saat perangkat dipairing ke aplikasi eWeLink atau mode DIY.</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div>
+            <div class="frow" style="margin-bottom:4px"><span class="lb">IP Address</span></div>
+            <input type="text" id="fDevIp" class="sel mono" placeholder="10.142.27.x">
+          </div>
+          <div>
+            <div class="frow" style="margin-bottom:4px"><span class="lb">MAC Address</span></div>
+            <input type="text" id="fDevMac" class="sel mono" placeholder="E0:98:...">
+          </div>
+        </div>
+        <div>
+          <div class="frow" style="margin-bottom:4px"><span class="lb">Jenis Perangkat</span></div>
+          <select id="fDevKind" class="sel">
+            <option value="switch">Saklar Biasa / Sonoff Mini (1-gang)</option>
+            <option value="switches">Saklar Daya / Sonoff POWR3 (dengan meteran listrik)</option>
+          </select>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div>
+            <div class="frow" style="margin-bottom:4px"><span class="lb">Daya Beban ON (W)</span><span class="ds">Opsional</span></div>
+            <input type="number" id="fDevWatt" class="sel" placeholder="mis. 12" min="0" step="any">
+          </div>
+          <div>
+            <div class="frow" style="margin-bottom:4px"><span class="lb">Standby (W)</span><span class="ds">Opsional</span></div>
+            <input type="number" id="fDevStandby" class="sel" placeholder="mis. 0.5" min="0" step="any">
+          </div>
+        </div>
+        <div class="row" style="margin-top:6px;gap:10px">
+          <button type="submit" class="btn pri" id="bSubmitDev" style="flex:1">Simpan & Hubungkan</button>
+          <button type="button" class="btn" id="bCancelAdd">Batal</button>
+        </div>
+      </form>
+    </div>
+  `;
+
+  $("bScan").onclick = async () => {
+    $("bScan").disabled = true;
+    $("bScan").textContent = "⏳ Memindai...";
+    try {
+      await send("POST", "/api/devices/discover");
+      await loadDiscovered();
+    } catch (x) {
+      toast("Gagal query mDNS: " + x.message);
+    }
+    setTimeout(() => {
+      if ($("bScan")) {
+        $("bScan").disabled = false;
+        $("bScan").textContent = "🔄 Cari Ulang";
+      }
+    }, 1200);
+  };
+
+  $("btnManualMode").onclick = resetManualForm;
+  $("bCancelAdd").onclick = closeSheet;
+
+  $("fAddDev").onsubmit = async (e) => {
+    e.preventDefault();
+    const id = $("fDevId").value.trim();
+    const name = $("fDevName").value.trim();
+    const key = $("fDevKey").value.trim();
+    if (!id || !name || !key) {
+      toast("Mohon lengkapi ID, Nama, dan Device Key");
+      return;
+    }
+    const dev = {
+      id: id,
+      name: name,
+      key: key,
+      ip: $("fDevIp").value.trim(),
+      mac: $("fDevMac").value.trim().toLowerCase(),
+      kind: $("fDevKind").value,
+      watt: $("fDevWatt").value === "" ? 0 : +$("fDevWatt").value,
+      standby_watt: $("fDevStandby").value === "" ? 0 : +$("fDevStandby").value
+    };
+
+    $("bSubmitDev").disabled = true;
+    $("bSubmitDev").textContent = "Menyimpan...";
+    try {
+      await send("POST", "/api/devices", dev);
+      closeSheet();
+      toast("Perangkat " + name + " berhasil ditambahkan!");
+      loadEnergy();
+    } catch (x) {
+      toast("Gagal menyimpan: " + x.message);
+      $("bSubmitDev").disabled = false;
+      $("bSubmitDev").textContent = "Simpan & Hubungkan";
+    }
+  };
+
+  loadDiscovered();
+  clearTimers();
+  timers.push(setInterval(loadDiscovered, 3000));
 }
 
 renderIot();

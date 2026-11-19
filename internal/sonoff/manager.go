@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -67,6 +68,16 @@ type devState struct {
 	lastFwd             time.Time // kapan terakhir diteruskan ke OnPower
 }
 
+// Discovered adalah perangkat Sonoff yang terdengar lewat mDNS tetapi belum diadopsi.
+type Discovered struct {
+	ID       string `json:"id"`
+	IP       string `json:"ip"`
+	MAC      string `json:"mac,omitempty"`
+	Type     string `json:"type,omitempty"`
+	Encrypt  bool   `json:"encrypt"`
+	LastSeen int64  `json:"last_seen"` // unix timestamp
+}
+
 type Manager struct {
 	// OnChange dipanggil (tanpa lock) setiap state berubah atau berkala.
 	OnChange func([]State)
@@ -80,17 +91,25 @@ type Manager struct {
 	SinceOf func(id string) int64
 	// QueryEvery = selang query mDNS; 0 = bawaan 30 detik.
 	QueryEvery time.Duration
+	// ResolveMAC (opsional): cari MAC dari IP lewat ARP/DHCP.
+	ResolveMAC func(ip string) string
 	resolve    func(mac string) string
 	lastQuery  atomic.Int64 // unix nano query terakhir
 
-	mu    sync.RWMutex
-	devs  map[string]*devState
-	order []string
+	mu         sync.RWMutex
+	conn       *net.UDPConn
+	devs       map[string]*devState
+	order      []string
+	discovered map[string]*Discovered
 }
 
 // NewManager: resolve(mac) memberi IP terkini dari tabel ARP/DHCP (boleh nil).
 func NewManager(devs []Device, resolve func(mac string) string) *Manager {
-	m := &Manager{devs: map[string]*devState{}, resolve: resolve}
+	m := &Manager{
+		devs:       map[string]*devState{},
+		discovered: map[string]*Discovered{},
+		resolve:    resolve,
+	}
 	for _, d := range devs {
 		d.MAC = strings.ToLower(d.MAC)
 		m.devs[d.ID] = &devState{Device: d, state: "unknown"}
@@ -147,9 +166,20 @@ func num(v any) (float64, bool) {
 // handleTXT memproses satu pengumuman mDNS dari perangkat.
 func (m *Manager) handleTXT(kv map[string]string, src net.IP) {
 	id := kv["id"]
+	if id == "" {
+		return
+	}
 	m.mu.Lock()
 	ds := m.devs[id]
 	if ds == nil {
+		var ip, mac string
+		if src != nil {
+			ip = src.String()
+			if m.ResolveMAC != nil {
+				mac = m.ResolveMAC(ip)
+			}
+		}
+		m.recordDiscovered(id, ip, mac, kv["type"], kv["encrypt"] == "true")
 		m.mu.Unlock()
 		return
 	}
@@ -313,7 +343,15 @@ func (m *Manager) Run(ctx context.Context, iface string) {
 	if err != nil {
 		log.Printf("sonoff: mDNS nonaktif (%v); kontrol tetap jalan, tetapi status tidak diketahui", err)
 	} else {
-		defer conn.Close()
+		m.mu.Lock()
+		m.conn = conn
+		m.mu.Unlock()
+		defer func() {
+			m.mu.Lock()
+			m.conn = nil
+			m.mu.Unlock()
+			conn.Close()
+		}()
 		go func() { <-ctx.Done(); conn.Close() }()
 		m.query(conn)
 		go func() {
@@ -532,3 +570,118 @@ func (m *Manager) Configure(id string, r ConfigReq) error {
 	m.notify()
 	return nil
 }
+
+func (m *Manager) recordDiscovered(id, ip, mac, devType string, encrypt bool) {
+	if m.discovered == nil {
+		m.discovered = map[string]*Discovered{}
+	}
+	disc, ok := m.discovered[id]
+	if !ok {
+		disc = &Discovered{ID: id}
+		m.discovered[id] = disc
+	}
+	if ip != "" {
+		disc.IP = ip
+	}
+	if mac != "" {
+		disc.MAC = mac
+	} else if m.ResolveMAC != nil && disc.IP != "" {
+		disc.MAC = m.ResolveMAC(disc.IP)
+	}
+	if devType != "" {
+		disc.Type = devType
+	}
+	disc.Encrypt = encrypt
+	disc.LastSeen = time.Now().Unix()
+}
+
+// Discovered mengembalikan daftar perangkat Sonoff yang terdengar mDNS tetapi belum diadopsi.
+func (m *Manager) Discovered() []Discovered {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]Discovered, 0, len(m.discovered))
+	for _, d := range m.discovered {
+		item := *d
+		if item.MAC == "" && m.ResolveMAC != nil && item.IP != "" {
+			item.MAC = m.ResolveMAC(item.IP)
+		}
+		out = append(out, item)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].LastSeen > out[j].LastSeen
+	})
+	return out
+}
+
+// Discover mengirim query mDNS agar semua perangkat menjawab segera.
+func (m *Manager) Discover() {
+	m.mu.RLock()
+	conn := m.conn
+	m.mu.RUnlock()
+	if conn != nil {
+		m.query(conn)
+	}
+}
+
+// AddDevice menambahkan atau memperbarui konfigurasi perangkat di memori.
+func (m *Manager) AddDevice(d Device) {
+	d.MAC = strings.ToLower(d.MAC)
+	m.mu.Lock()
+	delete(m.discovered, d.ID)
+	ds, ok := m.devs[d.ID]
+	if !ok {
+		ds = &devState{Device: d, state: "unknown"}
+		if d.IP != "" {
+			ds.ip = d.IP
+		}
+		m.devs[d.ID] = ds
+		m.order = append(m.order, d.ID)
+	} else {
+		ds.Device = d
+		if d.IP != "" {
+			ds.ip = d.IP
+		}
+	}
+	m.mu.Unlock()
+	m.Discover()
+	m.notify()
+}
+
+// RemoveDevice menghapus perangkat dari manager.
+func (m *Manager) RemoveDevice(id string) {
+	m.mu.Lock()
+	delete(m.devs, id)
+	for i, oid := range m.order {
+		if oid == id {
+			m.order = append(m.order[:i], m.order[i+1:]...)
+			break
+		}
+	}
+	m.mu.Unlock()
+	m.notify()
+}
+
+// Device mengembalikan konfigurasi perangkat berdasarkan ID.
+func (m *Manager) Device(id string) (Device, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ds, ok := m.devs[id]
+	if !ok {
+		return Device{}, false
+	}
+	return ds.Device, true
+}
+
+// Devices mengembalikan daftar perangkat terdaftar sesuai urutan.
+func (m *Manager) Devices() []Device {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]Device, 0, len(m.order))
+	for _, id := range m.order {
+		if ds := m.devs[id]; ds != nil {
+			out = append(out, ds.Device)
+		}
+	}
+	return out
+}
+

@@ -10,24 +10,13 @@ Dashboard untuk router OpenWrt (armv7) sebagai pengganti Home Assistant. Isinya:
 
 Frontend ditanam ke dalam binary (`go:embed`), sehingga cukup satu berkas untuk di-deploy.
 
-## Mode
-
-| Mode | Cara aktif | Isi |
-|---|---|---|
-| Penuh | `dashboard` biasa | Client jaringan, ping, sweep subnet, IoT, energi |
-| Hanya IoT | `"iot_only": true` di config, atau build dengan `-X main.buildMode=iot` | IoT dan energi, tanpa tabel client, ping, dan sweep |
-
 ## Build
 
 Build di Mac/PC, bukan di router. Tidak butuh CGO. Butuh Go 1.26 atau lebih baru, dan internet saat
 pertama kali mengunduh driver SQLite (`modernc.org/sqlite`, murni Go).
 
 ```sh
-# Penuh
 GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -ldflags "-s -w" -o dashboard-armv7 .
-
-# Hanya IoT
-./build-iot.sh
 ```
 
 Uji:
@@ -39,18 +28,48 @@ go test ./...
 
 ## Deploy
 
-Mode penuh (`/opt/dashboard`):
+Lokasi instalasi di router (`/opt/dashboard`):
 
 ```sh
 mkdir -p /opt/dashboard
 cp dashboard-armv7 /opt/dashboard/dashboard
-cp config.json devices.json /opt/dashboard/
-cp dashboard.init /etc/init.d/dashboard
+```
+
+Contoh konfigurasi `/opt/dashboard/config.json`:
+
+```json
+{
+  "listen": ":8080",
+  "lan_iface": "br-lan",
+  "tariff_per_kwh": 1444.7,
+  "utc_offset_hours": 7
+}
+```
+
+Contoh init script procd di `/etc/init.d/dashboard`:
+
+```sh
+#!/bin/sh /etc/rc.common
+START=95
+STOP=10
+USE_PROCD=1
+
+start_service() {
+	procd_open_instance
+	procd_set_param command /opt/dashboard/dashboard -config /opt/dashboard/config.json
+	procd_set_param respawn
+	procd_set_param stderr 1
+	procd_set_param stdout 1
+	procd_close_instance
+}
+```
+
+Aktifkan service:
+
+```sh
 chmod +x /etc/init.d/dashboard
 /etc/init.d/dashboard enable && /etc/init.d/dashboard start
 ```
-
-Mode hanya IoT (`/opt/iot-dashboard`) memakai `iot-dashboard.init` dan `iot-config.json` dengan cara yang sama. Kedua init script memakai procd dengan `respawn`.
 
 Jalankan manual:
 
@@ -71,9 +90,9 @@ Berkas JSON, dibaca lewat `-config`. Nilai yang tidak diisi memakai bawaan.
 | `listen` | `:8080` | Alamat HTTP |
 | `lan_iface` | `br-lan` | Interface LAN untuk ARP dan WiFi |
 | `subnet` | dari `lan_iface` | CIDR untuk sweep, `/22` sampai `/30` |
-| `poll_seconds` | `5` | Selang siklus client (minimal 30 di mode IoT) |
+| `poll_seconds` | `5` | Selang siklus client |
 | `sweep_seconds` | `60` | Selang sweep ping subnet |
-| `devices_file` | `devices.json` | Daftar perangkat Sonoff. Folder `data/` dibuat di sampingnya |
+| `devices_file` | `devices.json` | Opsi impor awal perangkat Sonoff ke SQLite bila ada |
 | `leases_file`, `arp_file` | `/tmp/dhcp.leases`, `/proc/net/arp` | Sumber data client |
 | `static_hosts` | - | Host yang selalu tampil, mis. `{"name": "...", "ip": "..."}` |
 | `wired_hosts` | - | IP perangkat kabel, dicek lewat ARP (`arping` bila ada) |
@@ -85,19 +104,17 @@ Berkas JSON, dibaca lewat `-config`. Nilai yang tidak diisi memakai bawaan.
 | `tariff_per_kwh` | `0` | Tarif (Rp/kWh). Nol berarti biaya tidak ditampilkan |
 | `utc_offset_hours` | zona sistem | Mis. `7` untuk WIB. Dipakai untuk batas "hari ini" dan "bulan ini" |
 | `db_path` | `data/dashboard.db` | Lokasi berkas SQLite |
-| `iot_only` | `false` | Mode hanya IoT |
 
-Pengaturan energi (watt, konsumsi standby, catatan) disimpan di SQLite. Nilai `watt` dan `standby_watt` di `devices.json` hanya dipakai sebagai isian awal.
+Pengaturan energi (watt, konsumsi standby, catatan) dan daftar perangkat disimpan di SQLite.
 
 ## Data
 
-Semua data disimpan di SQLite (`data/dashboard.db` di samping `devices.json`): riwayat ON/OFF,
+Semua data disimpan di SQLite (`data/dashboard.db`): konfigurasi perangkat Sonoff, riwayat ON/OFF,
 sumber perubahannya, log daya (sampel mentah, rekap menit, kejadian), kWh harian terukur,
 pengaturan energi, dan log eksekusi jadwal.
 
 Yang tetap berupa berkas:
 
-- `devices.json`: daftar perangkat Sonoff
 - `data/schedules.json`: scene dan jadwal
 
 ## WiFi
@@ -122,9 +139,13 @@ Bila `wifi_events` bernilai `false`, data WiFi dibaca ulang tiap siklus sebagai 
 | GET | `/api/energy`, `/api/energy/compare`, `/api/energy/monthly?months=N` | Estimasi energi |
 | GET | `/api/power/{id}?hours=N` | Grafik daya (1 sampai 48 jam) |
 | GET | `/api/onoff/{id}?hours=N` | Riwayat ON/OFF (1 sampai 800 jam) |
+| GET, POST | `/api/devices` | Daftar perangkat / tambah perangkat baru |
+| DELETE | `/api/devices/{id}` | Hapus perangkat dari SQLite |
+| GET | `/api/devices/discovered` | Daftar perangkat baru terdeteksi mDNS |
+| POST | `/api/devices/discover` | Picu query probe mDNS baru |
 | `/api/sched` | | Penjadwalan |
 
-Endpoint yang mengubah state (POST, PUT) wajib mengirim header `X-Dashboard: 1`. Header ini memicu preflight CORS, sehingga halaman web lain tidak bisa mengirim perintah dari browser.
+Endpoint yang mengubah state (POST, PUT, DELETE) wajib mengirim header `X-Dashboard: 1`. Header ini memicu preflight CORS, sehingga halaman web lain tidak bisa mengirim perintah dari browser.
 
 ## Keamanan
 
@@ -133,4 +154,3 @@ Endpoint yang mengubah state (POST, PUT) wajib mengirim header `X-Dashboard: 1`.
 ## Catatan dan masalah yang diketahui
 
 - **Flush kWh harian bisa hilang saat shutdown.** Goroutine energi harian memanggil `daily.Flush` saat `ctx` dibatalkan (`main.go`, sekitar baris 509), tetapi `main` hanya menunggu `flushDone` untuk log daya (sekitar baris 595). Proses bisa selesai sebelum flush selesai, sehingga data kWh hingga 5 menit bisa hilang. Perbaikan: tambahkan channel `dailyDone` seperti `flushDone`, lalu tunggu sebelum keluar.
-- **Penggantian judul bergantung pada teks HTML.** Mode hanya IoT mengganti `🌐 Network Dashboard` menjadi `⚡ IoT Dashboard` di `internal/web/web.go` (sekitar baris 130). Bila judul di `index.html` berubah, penggantian diam-diam tidak berlaku.

@@ -50,9 +50,6 @@ type config struct {
 		Lat float64 `json:"lat"`
 		Lon float64 `json:"lon"`
 	} `json:"location"`
-	// IoTOnly: hanya dashboard IoT (tanpa tabel client, ping, sweep, dan kamera). Binary yang dibangun
-	// dengan -ldflags "-X main.buildMode=iot" selalu memakai mode ini.
-	IoTOnly bool `json:"iot_only"`
 	// TariffPerKWh = tarif listrik (Rp per kWh) untuk perkiraan biaya; 0 = biaya tidak ditampilkan.
 	TariffPerKWh float64 `json:"tariff_per_kwh"`
 	// UTCOffsetHours: zona waktu untuk batas "hari ini"/"bulan ini" (mis. 7 untuk WIB).
@@ -110,9 +107,6 @@ func ifaceSubnet(name string) string {
 	return ""
 }
 
-// buildMode diisi saat build (-X main.buildMode=iot) untuk binary hanya-IoT.
-var buildMode string
-
 func main() {
 	cfgPath := flag.String("config", "config.json", "file konfigurasi")
 	flag.Parse()
@@ -121,25 +115,39 @@ func main() {
 	if err := loadJSON(*cfgPath, &cfg); err != nil {
 		log.Fatalf("config %s: %v", *cfgPath, err)
 	}
-	if buildMode == "iot" {
-		cfg.IoTOnly = true
-	}
-	if cfg.IoTOnly {
-		// Collector hanya dipakai membaca ARP/DHCP untuk mencari IP perangkat: tanpa ping dan sweep.
-		cfg.NoPing, cfg.Subnet = true, ""
-		if cfg.PollSeconds < 30 {
-			cfg.PollSeconds = 30
-		}
-	}
-	var devs []sonoff.Device
-	if err := loadJSON(cfg.DevicesFile, &devs); err != nil {
-		log.Printf("devices %s: %v (IoT kosong)", cfg.DevicesFile, err)
-	}
-	if cfg.Subnet == "" && cfg.LANIface != "" && !cfg.IoTOnly {
+	if cfg.Subnet == "" && cfg.LANIface != "" {
 		cfg.Subnet = ifaceSubnet(cfg.LANIface)
 	}
-	if cfg.Subnet == "" && !cfg.IoTOnly {
+	if cfg.Subnet == "" {
 		log.Printf("subnet tidak diketahui: sweep dinonaktifkan")
+	}
+
+	dbPath := cfg.DBPath
+	if dbPath == "" {
+		dbPath = filepath.Join(filepath.Dir(cfg.DevicesFile), "data", "dashboard.db")
+	}
+	sdb, err := sqlstore.Open(dbPath)
+	if err != nil {
+		log.Fatalf("SQLite %s: %v", dbPath, err)
+	}
+	log.Printf("penyimpanan: SQLite di %s", dbPath)
+
+	devStore := sdb.Devices()
+	devs, err := devStore.All()
+	if err != nil {
+		log.Fatalf("muat perangkat dari SQLite: %v", err)
+	}
+	if len(devs) == 0 && cfg.DevicesFile != "" {
+		var seedDevs []sonoff.Device
+		if err := loadJSON(cfg.DevicesFile, &seedDevs); err == nil && len(seedDevs) > 0 {
+			log.Printf("mengimpor %d perangkat dari %s ke SQLite...", len(seedDevs), cfg.DevicesFile)
+			for _, d := range seedDevs {
+				if err := devStore.Save(d); err != nil {
+					log.Printf("gagal simpan perangkat %s: %v", d.ID, err)
+				}
+			}
+			devs, _ = devStore.All()
+		}
 	}
 
 	aliases := map[string]string{}
@@ -166,21 +174,11 @@ func main() {
 		WifiEvents:    cfg.WifiEvents == nil || *cfg.WifiEvents,
 		Aliases:       aliases,
 		NoPing:        cfg.NoPing,
-		ResolveOnly:   cfg.IoTOnly,
 	})
 	mgr := sonoff.NewManager(devs, col.IPByMAC)
+	mgr.ResolveMAC = col.MACByIP
 	mgr.QueryEvery = time.Duration(cfg.QuerySeconds) * time.Second
 	hub := web.NewHub()
-
-	dbPath := cfg.DBPath
-	if dbPath == "" {
-		dbPath = filepath.Join(filepath.Dir(cfg.DevicesFile), "data", "dashboard.db")
-	}
-	sdb, err := sqlstore.Open(dbPath)
-	if err != nil {
-		log.Fatalf("SQLite %s: %v", dbPath, err)
-	}
-	log.Printf("penyimpanan: SQLite di %s", dbPath)
 
 	// riwayat ON/OFF semua perangkat (kecil: hanya perubahan yang disimpan)
 	var olog *onoff.Log
@@ -233,15 +231,10 @@ func main() {
 			}
 		}
 	}
-	if !cfg.IoTOnly {
-		col.OnUpdate = func(c []netdata.Client) { hub.Publish("net", c) }
-	}
+	col.OnUpdate = func(c []netdata.Client) { hub.Publish("net", c) }
 	mgr.OnChange = func(s []sonoff.State) { hub.Publish("iot", s) }
 
-	var netFn func() any
-	if !cfg.IoTOnly {
-		netFn = func() any { return col.Snapshot() }
-	}
+	netFn := func() any { return col.Snapshot() }
 	// pengaturan estimasi energi di SQLite. Nilai watt/standby_watt di devices.json
 	// hanya menjadi isian awal (diimpor sekali); sesudahnya diubah dari tab Detail.
 	ecStore := sdb.EnergyCfg()
@@ -255,7 +248,7 @@ func main() {
 	}
 	energyDevs := func() []energy.Dev {
 		var ds []energy.Dev
-		for _, d := range devs {
+		for _, d := range mgr.Devices() {
 			c := energy.Cfg{Watt: d.Watt, StandbyW: d.StandbyW}
 			if ecerr == nil {
 				c = ecfg.Get(d.ID)
@@ -317,10 +310,9 @@ func main() {
 		schH = sch.Handler()
 	}
 	handler := web.New(web.Handlers{
-		Sched:   schH,
-		Net:     netFn,
-		IoTOnly: cfg.IoTOnly,
-		IoT:     func() any { return mgr.States() },
+		Sched: schH,
+		Net:   netFn,
+		IoT:   func() any { return mgr.States() },
 		Power: func() any {
 			if plog == nil {
 				return map[string]powerlog.Live{}
@@ -399,6 +391,40 @@ func main() {
 				log.Printf("iot %s %s: %v", id, cmd, err)
 			}
 			return err
+		},
+		DiscoveredDevices: func() any {
+			return mgr.Discovered()
+		},
+		Discover: func() {
+			mgr.Discover()
+		},
+		AddDevice: func(d sonoff.Device) error {
+			if err := devStore.Save(d); err != nil {
+				return err
+			}
+			mgr.AddDevice(d)
+			if d.MAC != "" {
+				col.SetAlias(strings.ToLower(d.MAC), d.Name)
+			}
+			if d.Watt > 0 || d.StandbyW > 0 {
+				_ = ecfg.Set(d.ID, energy.Cfg{Watt: d.Watt, StandbyW: d.StandbyW})
+			}
+			if d.Kind == "switches" && plog != nil {
+				_ = plog.Add(d.ID)
+			}
+			hub.Publish("iot", mgr.States())
+			return nil
+		},
+		DeleteDevice: func(id string) error {
+			if err := devStore.Delete(id); err != nil {
+				return err
+			}
+			mgr.RemoveDevice(id)
+			hub.Publish("iot", mgr.States())
+			return nil
+		},
+		Devices: func() any {
+			return mgr.Devices()
 		},
 	}, hub)
 
@@ -495,11 +521,7 @@ func main() {
 		defer cancel()
 		srv.Shutdown(sc)
 	}()
-	if cfg.IoTOnly {
-		log.Printf("dashboard IoT di %s (%d perangkat)", cfg.Listen, len(devs))
-	} else {
-		log.Printf("dashboard di %s (client: %s, IoT: %d perangkat)", cfg.Listen, cfg.Subnet, len(devs))
-	}
+	log.Printf("dashboard di %s (client: %s, IoT: %d perangkat)", cfg.Listen, cfg.Subnet, len(devs))
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}

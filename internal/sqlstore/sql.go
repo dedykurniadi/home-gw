@@ -15,6 +15,7 @@ var schemaStmts = []string{
 	`CREATE TABLE IF NOT EXISTS onoff_src(id TEXT NOT NULL, t INTEGER NOT NULL, src TEXT NOT NULL)`,
 	`CREATE INDEX IF NOT EXISTS onoff_src_id_t ON onoff_src(id, t)`,
 	`CREATE TABLE IF NOT EXISTS energy_daily(dev TEXT NOT NULL, day TEXT NOT NULL, kwh REAL NOT NULL, PRIMARY KEY(dev, day))`,
+	`CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, name TEXT NOT NULL, key TEXT NOT NULL, mac TEXT NOT NULL DEFAULT '', ip TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT 'switch', watt REAL NOT NULL DEFAULT 0, standby_watt REAL NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')))`,
 }
 
 const (
@@ -58,4 +59,11 @@ const (
 	qSchedRuns  = `SELECT t, fire, scene, label, ok, err, fails FROM sched_log ORDER BY seq DESC LIMIT ?`
 	qSchedLast  = `SELECT scene, ok, MAX(t) FROM sched_log GROUP BY scene, ok`
 	qSchedPrune = `DELETE FROM sched_log WHERE t < ?`
+
+	qDevAll    = `SELECT id, name, key, mac, ip, kind, watt, standby_watt FROM devices ORDER BY created_at`
+	qDevGet    = `SELECT id, name, key, mac, ip, kind, watt, standby_watt FROM devices WHERE id = ?`
+	qDevSave   = `INSERT INTO devices(id, name, key, mac, ip, kind, watt, standby_watt) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET name = excluded.name, key = excluded.key, mac = excluded.mac,
+		ip = excluded.ip, kind = excluded.kind, watt = excluded.watt, standby_watt = excluded.standby_watt`
+	qDevDelete = `DELETE FROM devices WHERE id = ?`
 )

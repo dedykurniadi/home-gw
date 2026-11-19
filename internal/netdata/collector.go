@@ -30,7 +30,6 @@ type Config struct {
 	NoPing        bool              // semua dianggap hidup (mode uji / non-root)
 	WiredHosts    []string          // IP perangkat kabel: status up/down dari ARP (arping bila ada), bukan hanya ICMP
 	WifiEvents    bool              // berlangganan event hostapd (ubus subscribe) agar konek/putus WiFi seketika
-	ResolveOnly   bool              // hanya membaca ARP/DHCP untuk IPByMAC: tanpa ubus/WiFi (mode hanya-IoT)
 }
 
 type Client struct {
@@ -119,13 +118,35 @@ func (c *Collector) IPByMAC(mac string) string {
 	return c.macIP[strings.ToLower(mac)]
 }
 
+// MACByIP memberi MAC terkini untuk sebuah IP ("" bila tidak diketahui).
+func (c *Collector) MACByIP(ip string) string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for _, cl := range c.clients {
+		if cl.IP == ip {
+			return cl.MAC
+		}
+	}
+	return ""
+}
+
+// SetAlias mengubah atau menambah alias nama untuk sebuah MAC.
+func (c *Collector) SetAlias(mac, name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cfg.Aliases == nil {
+		c.cfg.Aliases = map[string]string{}
+	}
+	c.cfg.Aliases[strings.ToLower(mac)] = name
+}
+
 func (c *Collector) Run(ctx context.Context) {
 	if c.pinger != nil {
 		defer c.pinger.Close()
 	}
 	c.refreshWifi()
 	c.cycle()
-	if c.cfg.WifiEvents && !c.cfg.ResolveOnly {
+	if c.cfg.WifiEvents {
 		go c.watchWifi(ctx)
 	}
 	t := time.NewTicker(c.cfg.PollInterval)
@@ -151,9 +172,6 @@ func (c *Collector) Run(ctx context.Context) {
 
 // refreshWifi membaca ulang data WiFi: saat start, saat event konek/putus, atau tiap siklus bila wifi_events mati.
 func (c *Collector) refreshWifi() {
-	if c.cfg.ResolveOnly {
-		return
-	}
 	c.wifi, c.conn = c.readWifi()
 }
 

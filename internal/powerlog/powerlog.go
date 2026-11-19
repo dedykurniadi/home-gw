@@ -676,37 +676,58 @@ func (l *Logger) load() {
 type Registry struct {
 	// OnUpdate dipanggil (tanpa lock) setelah ada sampel baru atau berkala.
 	OnUpdate func(map[string]Live)
+	mu       sync.RWMutex
+	cfg      Config
 	loggers  map[string]*Logger
 	order    []string
 }
 
 // OpenAll membuka satu Logger per id dengan Store dari cfg.NewStore.
 func OpenAll(ids []string, cfg Config) (*Registry, error) {
-	r := &Registry{loggers: map[string]*Logger{}}
+	r := &Registry{cfg: cfg, loggers: map[string]*Logger{}}
 	for _, id := range ids {
-		c := cfg
-		if cfg.NewStore == nil {
-			return nil, fmt.Errorf("powerlog %s: NewStore wajib diisi", id)
+		if err := r.Add(id); err != nil {
+			return nil, err
 		}
-		st, err := cfg.NewStore(id)
-		if err != nil {
-			return nil, fmt.Errorf("powerlog %s: %w", id, err)
-		}
-		c.Store = st
-		l, err := Open(id, c)
-		if err != nil {
-			return nil, fmt.Errorf("powerlog %s: %w", id, err)
-		}
-		r.loggers[id] = l
-		r.order = append(r.order, id)
 	}
 	return r, nil
 }
 
-func (r *Registry) Has(id string) bool { _, ok := r.loggers[id]; return ok }
+func (r *Registry) Add(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.loggers[id]; ok {
+		return nil
+	}
+	if r.cfg.NewStore == nil {
+		return fmt.Errorf("powerlog %s: NewStore wajib diisi", id)
+	}
+	st, err := r.cfg.NewStore(id)
+	if err != nil {
+		return fmt.Errorf("powerlog %s: %w", id, err)
+	}
+	c := r.cfg
+	c.Store = st
+	l, err := Open(id, c)
+	if err != nil {
+		return fmt.Errorf("powerlog %s: %w", id, err)
+	}
+	r.loggers[id] = l
+	r.order = append(r.order, id)
+	return nil
+}
+
+func (r *Registry) Has(id string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.loggers[id]
+	return ok
+}
 
 func (r *Registry) Record(id string, t time.Time, sw string, w, v, a float64, viaQuery bool) {
+	r.mu.RLock()
 	l := r.loggers[id]
+	r.mu.RUnlock()
 	if l == nil {
 		return
 	}
@@ -717,6 +738,8 @@ func (r *Registry) Record(id string, t time.Time, sw string, w, v, a float64, vi
 }
 
 func (r *Registry) Lives() map[string]Live {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	out := make(map[string]Live, len(r.loggers))
 	for id, l := range r.loggers {
 		out[id] = l.Live()
@@ -728,7 +751,9 @@ func (r *Registry) Lives() map[string]Live {
 // dari rekap menit di penyimpanan ditambah rekap yang masih di memori. Nilai bisa lebih kecil dari
 // sebenarnya bila ada menit tanpa data. ok=false bila id tidak dikenal.
 func (r *Registry) DailyKWh(id string, since time.Time, loc *time.Location) (map[string]float64, bool) {
+	r.mu.RLock()
 	l := r.loggers[id]
+	r.mu.RUnlock()
 	if l == nil {
 		return nil, false
 	}
@@ -758,7 +783,9 @@ func (r *Registry) DailyKWh(id string, since time.Time, loc *time.Location) (map
 }
 
 func (r *Registry) History(id string, hours int) (History, bool) {
+	r.mu.RLock()
 	l := r.loggers[id]
+	r.mu.RUnlock()
 	if l == nil {
 		return History{}, false
 	}
@@ -791,9 +818,18 @@ func (r *Registry) Run(ctx context.Context, flushEvery time.Duration) {
 }
 
 func (r *Registry) FlushAll() {
-	for _, id := range r.order {
-		if err := r.loggers[id].Flush(); err != nil {
-			log.Printf("powerlog %s: gagal menulis: %v", id, err)
+	r.mu.RLock()
+	ids := append([]string(nil), r.order...)
+	loggers := make([]*Logger, 0, len(ids))
+	for _, id := range ids {
+		if l := r.loggers[id]; l != nil {
+			loggers = append(loggers, l)
+		}
+	}
+	r.mu.RUnlock()
+	for i, l := range loggers {
+		if err := l.Flush(); err != nil {
+			log.Printf("powerlog %s: gagal menulis: %v", ids[i], err)
 		}
 	}
 }

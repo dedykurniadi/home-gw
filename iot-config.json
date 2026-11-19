@@ -1,7 +1,0 @@
-{
-  "listen": ":8081",
-  "lan_iface": "br-lan",
-  "devices_file": "/opt/iot-dashboard/devices.json",
-  "tariff_per_kwh": 1444.7,
-  "utc_offset_hours": 7
-}
