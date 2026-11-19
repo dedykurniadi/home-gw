@@ -1,5 +1,5 @@
-// Dashboard pengganti Home Assistant untuk router OpenWrt: client jaringan, IoT Sonoff, (kamera menyusul).
-// Pemakaian: ./dashboard -config config.json
+// HomeGW: gateway dan pusat kendali untuk router OpenWrt: client jaringan, IoT Sonoff, pemantauan daya & jadwal.
+// Pemakaian: ./homegw -config config.json
 package main
 
 import (
@@ -18,14 +18,14 @@ import (
 	"syscall"
 	"time"
 
-	"owrt-dashboard/internal/energy"
-	"owrt-dashboard/internal/netdata"
-	"owrt-dashboard/internal/onoff"
-	"owrt-dashboard/internal/powerlog"
-	"owrt-dashboard/internal/sched"
-	"owrt-dashboard/internal/sonoff"
-	"owrt-dashboard/internal/sqlstore"
-	"owrt-dashboard/internal/web"
+	"homegw/internal/energy"
+	"homegw/internal/netdata"
+	"homegw/internal/onoff"
+	"homegw/internal/powerlog"
+	"homegw/internal/sched"
+	"homegw/internal/sonoff"
+	"homegw/internal/sqlstore"
+	"homegw/internal/web"
 )
 
 type config struct {
@@ -55,7 +55,7 @@ type config struct {
 	// UTCOffsetHours: zona waktu untuk batas "hari ini"/"bulan ini" (mis. 7 untuk WIB).
 	// Kosong = zona waktu sistem (di OpenWrt bisa jatuh ke UTC bila TZ tidak terbaca).
 	UTCOffsetHours *float64 `json:"utc_offset_hours"`
-	// DBPath: lokasi berkas SQLite; kosong = <folder devices_file>/data/dashboard.db
+	// DBPath: lokasi berkas SQLite; kosong = <folder devices_file>/data/homegw.db
 	DBPath string `json:"db_path"`
 }
 
@@ -124,7 +124,15 @@ func main() {
 
 	dbPath := cfg.DBPath
 	if dbPath == "" {
-		dbPath = filepath.Join(filepath.Dir(cfg.DevicesFile), "data", "dashboard.db")
+		legacyDB := filepath.Join(filepath.Dir(cfg.DevicesFile), "data", "dashboard.db")
+		newDB := filepath.Join(filepath.Dir(cfg.DevicesFile), "data", "homegw.db")
+		if _, err := os.Stat(newDB); err == nil {
+			dbPath = newDB
+		} else if _, err := os.Stat(legacyDB); err == nil {
+			dbPath = legacyDB
+		} else {
+			dbPath = newDB
+		}
 	}
 	sdb, err := sqlstore.Open(dbPath)
 	if err != nil {
@@ -381,7 +389,7 @@ func main() {
 		},
 		Control: func(id, cmd string) error {
 			if olog != nil {
-				olog.NoteCmd(id, "Dashboard")
+				olog.NoteCmd(id, "HomeGW")
 			}
 			err := mgr.Set(id, cmd)
 			if errors.Is(err, sonoff.ErrUnknown) {
@@ -521,7 +529,7 @@ func main() {
 		defer cancel()
 		srv.Shutdown(sc)
 	}()
-	log.Printf("dashboard di %s (client: %s, IoT: %d perangkat)", cfg.Listen, cfg.Subnet, len(devs))
+	log.Printf("homegw di %s (client: %s, IoT: %d perangkat)", cfg.Listen, cfg.Subnet, len(devs))
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}

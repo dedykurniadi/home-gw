@@ -2,7 +2,7 @@ package sqlstore
 
 import (
 	"database/sql"
-	"owrt-dashboard/internal/sonoff"
+	"homegw/internal/sonoff"
 )
 
 // DeviceStore mengelola penyimpanan konfigurasi perangkat Sonoff di SQLite.

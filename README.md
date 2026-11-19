@@ -1,12 +1,13 @@
-# home-gw
+# HomeGW (home-gw)
 
-Dashboard untuk router OpenWrt (armv7) sebagai pengganti Home Assistant. Isinya:
+Gateway dan pusat kendali untuk router OpenWrt (armv7) sebagai pengganti Home Assistant. Isinya:
 
 - **Client jaringan**: daftar perangkat dari DHCP lease, ARP, dan WiFi (hostapd), lengkap dengan status ping dan lama terhubung.
 - **IoT Sonoff**: status, kontrol on/off, konfigurasi perangkat, dan pemantauan daya (mDNS).
 - **Energi**: estimasi pemakaian listrik per perangkat, rekap harian dan bulanan, serta biaya bila tarif diisi.
 - **Penjadwalan**: scene dengan jadwal waktu, termasuk terbit dan terbenam matahari.
-- Kamera direncanakan (belum ada).
+- **WebSocket & API Gateway**: komunikasi real-time dua arah untuk web dashboard dan aplikasi mobile.
+- Kamera direncanakan (placeholder).
 
 Frontend ditanam ke dalam binary (`go:embed`), sehingga cukup satu berkas untuk di-deploy.
 
@@ -16,7 +17,7 @@ Build di Mac/PC, bukan di router. Tidak butuh CGO. Butuh Go 1.26 atau lebih baru
 pertama kali mengunduh driver SQLite (`modernc.org/sqlite`, murni Go).
 
 ```sh
-GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -ldflags "-s -w" -o dashboard-armv7 .
+GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -ldflags "-s -w" -o homegw-armv7l .
 ```
 
 Uji:
@@ -28,14 +29,14 @@ go test ./...
 
 ## Deploy
 
-Lokasi instalasi di router (`/opt/dashboard`):
+Lokasi instalasi di router (`/opt/homegw`):
 
 ```sh
-mkdir -p /opt/dashboard
-cp dashboard-armv7 /opt/dashboard/dashboard
+mkdir -p /opt/homegw
+cp homegw-armv7l /opt/homegw/homegw
 ```
 
-Contoh konfigurasi `/opt/dashboard/config.json`:
+Contoh konfigurasi `/opt/homegw/config.json`:
 
 ```json
 {
@@ -46,7 +47,7 @@ Contoh konfigurasi `/opt/dashboard/config.json`:
 }
 ```
 
-Contoh init script procd di `/etc/init.d/dashboard`:
+Contoh init script procd di `/etc/init.d/homegw`:
 
 ```sh
 #!/bin/sh /etc/rc.common
@@ -56,7 +57,7 @@ USE_PROCD=1
 
 start_service() {
 	procd_open_instance
-	procd_set_param command /opt/dashboard/dashboard -config /opt/dashboard/config.json
+	procd_set_param command /opt/homegw/homegw -config /opt/homegw/config.json
 	procd_set_param respawn
 	procd_set_param stderr 1
 	procd_set_param stdout 1
@@ -67,14 +68,14 @@ start_service() {
 Aktifkan service:
 
 ```sh
-chmod +x /etc/init.d/dashboard
-/etc/init.d/dashboard enable && /etc/init.d/dashboard start
+chmod +x /etc/init.d/homegw
+/etc/init.d/homegw enable && /etc/init.d/homegw start
 ```
 
 Jalankan manual:
 
 ```sh
-./dashboard -config config.json
+./homegw -config config.json
 ```
 
 Catatan upgrade: data CSV dari versi lama tidak dibaca lagi. Impor dulu dengan binary versi lama
@@ -103,13 +104,13 @@ Berkas JSON, dibaca lewat `-config`. Nilai yang tidak diisi memakai bawaan.
 | `location` | - | `{"lat", "lon"}` untuk jadwal terbit dan terbenam |
 | `tariff_per_kwh` | `0` | Tarif (Rp/kWh). Nol berarti biaya tidak ditampilkan |
 | `utc_offset_hours` | zona sistem | Mis. `7` untuk WIB. Dipakai untuk batas "hari ini" dan "bulan ini" |
-| `db_path` | `data/dashboard.db` | Lokasi berkas SQLite |
+| `db_path` | `data/homegw.db` | Lokasi berkas SQLite (otomatis fallback ke `data/dashboard.db` bila ada) |
 
 Pengaturan energi (watt, konsumsi standby, catatan) dan daftar perangkat disimpan di SQLite.
 
 ## Data
 
-Semua data disimpan di SQLite (`data/dashboard.db`): konfigurasi perangkat Sonoff, riwayat ON/OFF,
+Semua data disimpan di SQLite (`data/homegw.db`): konfigurasi perangkat Sonoff, riwayat ON/OFF,
 sumber perubahannya, log daya (sampel mentah, rekap menit, kejadian), kWh harian terukur,
 pengaturan energi, dan log eksekusi jadwal.
 
@@ -119,20 +120,21 @@ Yang tetap berupa berkas:
 
 ## WiFi
 
-Data client WiFi tidak di-poll. Dashboard:
+Data client WiFi tidak di-poll. HomeGW:
 
 1. Membaca data WiFi sekali saat start.
 2. Menjalankan `ubus subscribe hostapd.<iface>` untuk tiap interface hostapd. Interface baru dicari tiap 60 detik.
-3. Membaca ulang data WiFi hanya saat event `assoc`, `disassoc`, `deauth`, `local-deauth`, atau `inactive-deauth`.
+3. Membaca ulang data WiFi seketika saat event `assoc`, `disassoc`, `deauth`, `local-deauth`, atau `inactive-deauth`.
 
-Bila `wifi_events` bernilai `false`, data WiFi dibaca ulang tiap siklus sebagai fallback. Perilaku `ubus subscribe` di perangkat nyata belum diuji sepenuhnya.
+Bila `wifi_events` bernilai `false`, data WiFi dibaca ulang tiap siklus sebagai fallback.
 
 ## API
 
 | Method | Path | Keterangan |
 |---|---|---|
+| WS | `/api/ws` | WebSocket full-duplex stream (`net`, `iot`, `power`) & kontrol |
 | GET | `/api/state` | State IoT, client, dan daya |
-| GET | `/api/events` | Aliran SSE: `iot`, `net`, `power` |
+| GET | `/api/events` | Aliran SSE (fallback): `iot`, `net`, `power` |
 | POST | `/api/iot/{id}` | Body `{"cmd": "on" \| "off" \| "toggle"}` |
 | POST | `/api/iot/{id}/config` | Startup, pulse, lebar pulse, LED |
 | PUT | `/api/energy/cfg/{id}` | Watt, standby, dan catatan |
@@ -145,11 +147,11 @@ Bila `wifi_events` bernilai `false`, data WiFi dibaca ulang tiap siklus sebagai 
 | POST | `/api/devices/discover` | Picu query probe mDNS baru |
 | `/api/sched` | | Penjadwalan |
 
-Endpoint yang mengubah state (POST, PUT, DELETE) wajib mengirim header `X-Dashboard: 1`. Header ini memicu preflight CORS, sehingga halaman web lain tidak bisa mengirim perintah dari browser.
+Endpoint yang mengubah state (POST, PUT, DELETE) wajib mengirim header `X-HomeGW: 1` (atau `X-Dashboard: 1`). Header ini memicu preflight CORS, sehingga halaman web lain tidak bisa mengirim perintah dari browser.
 
 ## Keamanan
 
-- **Tidak ada autentikasi.** Server mendengarkan di semua interface (`:8080`). Siapa pun di LAN yang bisa mengirim header `X-Dashboard: 1` dapat menyalakan atau mematikan perangkat dan mengubah konfigurasi. Bind ke IP LAN saja, misalnya `"listen": "10.142.27.1:8080"`, atau batasi lewat firewall. Jangan izinkan akses dari luar LAN.
+- **Tidak ada autentikasi.** Server mendengarkan di semua interface (`:8080`). Siapa pun di LAN yang bisa mengirim header `X-HomeGW: 1` dapat menyalakan atau mematikan perangkat dan mengubah konfigurasi. Bind ke IP LAN saja, misalnya `"listen": "10.142.27.1:8080"`, atau batasi lewat firewall. Jangan izinkan akses dari luar LAN.
 
 ## Catatan dan masalah yang diketahui
 

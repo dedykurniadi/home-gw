@@ -1,4 +1,4 @@
-module owrt-dashboard
+module homegw
 
 go 1.26.0
 

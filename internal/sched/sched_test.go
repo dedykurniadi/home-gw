@@ -206,7 +206,7 @@ func TestPersistAndHTTP(t *testing.T) {
 		t.Fatalf("tanpa header: %d", w.Code)
 	}
 	req = httptest.NewRequest("POST", "/api/sched", strings.NewReader(body))
-	req.Header.Set("X-Dashboard", "1")
+	req.Header.Set("X-HomeGW", "1")
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	if w.Code != 200 {
@@ -223,7 +223,7 @@ func TestPersistAndHTTP(t *testing.T) {
 	}
 	id := e.Views()[0].ID
 	rq := httptest.NewRequest("DELETE", "/api/sched/"+id, nil)
-	rq.Header.Set("X-Dashboard", "1")
+	rq.Header.Set("X-HomeGW", "1")
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, rq)
 	if w.Code != 200 || len(e.Views()) != 0 {

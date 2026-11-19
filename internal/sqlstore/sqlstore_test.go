@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"owrt-dashboard/internal/onoff"
-	"owrt-dashboard/internal/powerlog"
-	"owrt-dashboard/internal/sched"
+	"homegw/internal/onoff"
+	"homegw/internal/powerlog"
+	"homegw/internal/sched"
 )
 
 func openDB(t *testing.T, path string) *DB {
@@ -142,7 +142,7 @@ func TestOnOffSrcRoundTrip(t *testing.T) {
 	if err := st.SetSrcStart(1000); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AppendSrc(onoff.SrcRec{T: 1010, ID: "lampu", Src: "Dashboard"}); err != nil {
+	if err := st.AppendSrc(onoff.SrcRec{T: 1010, ID: "lampu", Src: "HomeGW"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.AppendSrc(onoff.SrcRec{T: 1020, ID: "ac", Src: "Scene: Pagi"}); err != nil {

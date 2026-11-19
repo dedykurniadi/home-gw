@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// Sumber perubahan ON/OFF. Perintah dari dashboard/app/scene dicatat terpisah di penyimpanan dan
+// Sumber perubahan ON/OFF. Perintah dari HomeGW/app/scene dicatat terpisah di penyimpanan dan
 // digabung saat riwayat dibaca, jadi skema ON/OFF tidak berubah.
 // Perubahan ON/OFF tanpa perintah terdekat dianggap dari perangkat (tombol fisik/eWeLink/lainnya).
 const (
@@ -63,7 +63,7 @@ func (l *Log) enableSrc() {
 	l.src = s
 }
 
-// NoteCmd mencatat bahwa src (mis. "Dashboard", "Scene: Pagi") baru saja memerintah perangkat id.
+// NoteCmd mencatat bahwa src (mis. "HomeGW", "Scene: Pagi") baru saja memerintah perangkat id.
 func (l *Log) NoteCmd(id, src string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

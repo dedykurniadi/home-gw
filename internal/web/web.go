@@ -15,7 +15,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"owrt-dashboard/internal/sonoff"
+	"homegw/internal/sonoff"
 )
 
 //go:embed static
@@ -271,6 +271,10 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
+func hasAuthHeader(r *http.Request) bool {
+	return r.Header.Get("X-HomeGW") == "1" || r.Header.Get("X-Dashboard") == "1"
+}
+
 func New(h Handlers, hub *Hub) http.Handler {
 	mux := http.NewServeMux()
 	sub, _ := fs.Sub(staticFS, "static")
@@ -337,8 +341,8 @@ func New(h Handlers, hub *Hub) http.Handler {
 			writeJSON(w, 404, map[string]string{"error": "pengaturan energi nonaktif"})
 			return
 		}
-		if r.Method != http.MethodPut || r.Header.Get("X-Dashboard") != "1" {
-			writeJSON(w, 403, map[string]string{"error": "PUT dengan header X-Dashboard diperlukan"})
+		if r.Method != http.MethodPut || !hasAuthHeader(r) {
+			writeJSON(w, 403, map[string]string{"error": "PUT dengan header X-HomeGW diperlukan"})
 			return
 		}
 		var req struct {
@@ -489,8 +493,8 @@ func New(h Handlers, hub *Hub) http.Handler {
 		}
 		// Header kustom memicu preflight CORS, sehingga halaman web lain tidak bisa
 		// menekan tombol dari browser pengguna (CSRF).
-		if r.Header.Get("X-Dashboard") != "1" {
-			writeJSON(w, 403, map[string]string{"error": "header X-Dashboard diperlukan"})
+		if !hasAuthHeader(r) {
+			writeJSON(w, 403, map[string]string{"error": "header X-HomeGW diperlukan"})
 			return
 		}
 		id := strings.TrimPrefix(r.URL.Path, "/api/iot/")
@@ -548,8 +552,8 @@ func New(h Handlers, hub *Hub) http.Handler {
 	}
 	if h.Discover != nil {
 		mux.HandleFunc("/api/devices/discover", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodPost || r.Header.Get("X-Dashboard") != "1" {
-				writeJSON(w, 403, map[string]string{"error": "POST dengan header X-Dashboard diperlukan"})
+			if r.Method != http.MethodPost || !hasAuthHeader(r) {
+				writeJSON(w, 403, map[string]string{"error": "POST dengan header X-HomeGW diperlukan"})
 				return
 			}
 			h.Discover()
@@ -570,8 +574,8 @@ func New(h Handlers, hub *Hub) http.Handler {
 				writeJSON(w, 404, map[string]string{"error": "tambah perangkat nonaktif"})
 				return
 			}
-			if r.Header.Get("X-Dashboard") != "1" {
-				writeJSON(w, 403, map[string]string{"error": "POST dengan header X-Dashboard diperlukan"})
+			if !hasAuthHeader(r) {
+				writeJSON(w, 403, map[string]string{"error": "POST dengan header X-HomeGW diperlukan"})
 				return
 			}
 			var d sonoff.Device
@@ -615,8 +619,8 @@ func New(h Handlers, hub *Hub) http.Handler {
 			writeJSON(w, 405, map[string]string{"error": "gunakan DELETE"})
 			return
 		}
-		if r.Header.Get("X-Dashboard") != "1" {
-			writeJSON(w, 403, map[string]string{"error": "DELETE dengan header X-Dashboard diperlukan"})
+		if !hasAuthHeader(r) {
+			writeJSON(w, 403, map[string]string{"error": "DELETE dengan header X-HomeGW diperlukan"})
 			return
 		}
 		if h.DeleteDevice == nil {

@@ -14,7 +14,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"owrt-dashboard/internal/sonoff"
+	"homegw/internal/sonoff"
 )
 
 func testServer(t *testing.T, ctl func(id, cmd string) error) (*httptest.Server, *Hub) {
@@ -31,7 +31,7 @@ func testServer(t *testing.T, ctl func(id, cmd string) error) (*httptest.Server,
 func post(t *testing.T, url, body string, hdr bool) int {
 	req, _ := http.NewRequest("POST", url, strings.NewReader(body))
 	if hdr {
-		req.Header.Set("X-Dashboard", "1")
+		req.Header.Set("X-HomeGW", "1")
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -444,7 +444,7 @@ func TestDeviceEndpoints(t *testing.T) {
 
 	// DELETE /api/devices/{id}
 	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/devices/1000c47454", nil)
-	req.Header.Set("X-Dashboard", "1")
+	req.Header.Set("X-HomeGW", "1")
 	delResp, err := http.DefaultClient.Do(req)
 	if err != nil || delResp.StatusCode != 200 || deleted != "1000c47454" {
 		t.Fatalf("DELETE devices gagal: %v st=%v deleted=%s", err, delResp, deleted)

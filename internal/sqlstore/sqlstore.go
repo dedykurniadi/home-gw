@@ -13,9 +13,9 @@ import (
 
 	_ "modernc.org/sqlite" // driver murni-Go, cross-compile ke linux/arm tanpa CGO
 
-	"owrt-dashboard/internal/energy"
-	"owrt-dashboard/internal/onoff"
-	"owrt-dashboard/internal/powerlog"
+	"homegw/internal/energy"
+	"homegw/internal/onoff"
+	"homegw/internal/powerlog"
 )
 
 const driverName = "sqlite"

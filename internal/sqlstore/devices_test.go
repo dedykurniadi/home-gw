@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"owrt-dashboard/internal/sonoff"
+	"homegw/internal/sonoff"
 )
 
 func TestDeviceStore(t *testing.T) {

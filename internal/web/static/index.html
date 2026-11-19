@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Network Dashboard</title>
+<title>HomeGW</title>
 <style>
 :root{--bg:#0d1117;--panel:#161b22;--line:#262d38;--txt:#e6edf3;--mut:#8b949e;--ok:#3fb950;--bad:#f85149;--warn:#d29922;--acc:#58a6ff}
 *{box-sizing:border-box;margin:0}
@@ -94,7 +94,7 @@ tr.off td{opacity:.5}
 </head>
 <body>
 <header>
-  <h1>🌐 Network Dashboard</h1>
+  <h1>🏠 HomeGW</h1>
   <div class="stat nt">Client <b id="sTot">0</b></div>
   <div class="stat nt">Online <b id="sOn" style="color:var(--ok)">0</b></div>
   <div class="stat nt">Offline <b id="sOff" style="color:var(--bad)">0</b></div>
@@ -410,7 +410,7 @@ function renderChart(h){
     return "<li>"+x+"</li>";
   }).join("")||'<li class="mono">belum ada kejadian</li>';
   const a=p.pushed,b=p.replied;
-  $("mNote").innerHTML=`Update mDNS sejak dashboard jalan: <b style="color:var(--txt)">${a}</b> spontan dari perangkat, <b style="color:var(--txt)">${b}</b> balasan query.<br>`+
+  $("mNote").innerHTML=`Update mDNS sejak HomeGW jalan: <b style="color:var(--txt)">${a}</b> spontan dari perangkat, <b style="color:var(--txt)">${b}</b> balasan query.<br>`+
     (a+b===0?"Belum ada update yang diterima.":a===0?"Perangkat tampaknya hanya menjawab query, jadi resolusi data = selang query (30 dtk).":"Perangkat mengirim update sendiri saat daya berubah.")+
     `<br>Disimpan di router: mentah 3 hari, rekap menit 2 tahun, kejadian permanen.`;
 }

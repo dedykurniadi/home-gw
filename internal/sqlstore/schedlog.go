@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 
-	"owrt-dashboard/internal/sched"
+	"homegw/internal/sched"
 )
 
 // schedLog menyimpan log eksekusi scene (berhasil/gagal, beserta perangkat yang gagal).

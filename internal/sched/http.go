@@ -15,12 +15,12 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 }
 
 // Handler melayani /api/sched (GET daftar) dan /api/sched/{id} (PUT, DELETE); POST /api/sched membuat jadwal.
-// Perubahan wajib memakai header X-Dashboard: 1 (perlindungan CSRF, sama seperti /api/iot).
+// Perubahan wajib memakai header X-HomeGW: 1 (perlindungan CSRF, sama seperti /api/iot).
 func (e *Engine) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/sched"), "/")
-		if r.Method != http.MethodGet && r.Header.Get("X-Dashboard") != "1" {
-			writeJSON(w, 403, map[string]string{"error": "header X-Dashboard diperlukan"})
+		if r.Method != http.MethodGet && r.Header.Get("X-HomeGW") != "1" && r.Header.Get("X-Dashboard") != "1" {
+			writeJSON(w, 403, map[string]string{"error": "header X-HomeGW diperlukan"})
 			return
 		}
 		switch {

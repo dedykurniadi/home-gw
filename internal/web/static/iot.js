@@ -24,7 +24,7 @@ async function api(path,opt){
   if(!r.ok){const e=new Error((j&&j.error)||("HTTP "+r.status));e.status=r.status;throw e;}
   return j;
 }
-const send=(method,path,body)=>api(path,{method,headers:{"Content-Type":"application/json","X-Dashboard":"1"},body:body==null?undefined:JSON.stringify(body)});
+const send=(method,path,body)=>api(path,{method,headers:{"Content-Type":"application/json","X-HomeGW":"1","X-Dashboard":"1"},body:body==null?undefined:JSON.stringify(body)});
 const seg=(items,cur,attr,cls)=>`<div class="seg" role="group">${items.map(([v,l])=>`<button type="button" class="${String(v)===String(cur)?"on "+(cls||""):""}" ${attr}="${esc(v)}" aria-pressed="${String(v)===String(cur)}">${esc(l)}</button>`).join("")}</div>`;
 const tgl=(on,attr,dis,label)=>`<button type="button" class="tg ${on?"on":""}" role="switch" aria-checked="${!!on}" aria-label="${esc(label)}" ${attr} ${dis?"disabled":""}><i></i></button>`;
 
@@ -299,13 +299,13 @@ function buildSettings(d){
     FR("Status saat daya menyala",`<select class="sel" id="fSt"><option value="on">Menyala (ON)</option><option value="off">Mati (OFF)</option><option value="stay">Status terakhir</option></select>`)+
     FR("Indikator jaringan",'',"fLe")+
     FR("Log",'<button type="button" class="lnk" id="fLog">Lihat</button>')+
-    `<div class="note">${dis?"Pengaturan perangkat POWR belum didukung dari dashboard; nilai hanya dibaca.":"Perubahan langsung dikirim ke perangkat (lokal, tanpa cloud)."}</div>`;
+    `<div class="note">${dis?"Pengaturan perangkat POWR belum didukung dari HomeGW; nilai hanya dibaca.":"Perubahan langsung dikirim ke perangkat (lokal, tanpa cloud)."}</div>`;
   const metered=d.kind=="switches";
   $("dEn").innerHTML=(metered?FR("Estimasi energi",'<span class="ro">Terukur oleh meter perangkat</span>'):
     FR("Daya beban saat ON (W)",'<input class="inp" id="eW" type="number" inputmode="decimal" min="0" max="5000" step="any" placeholder="mis. 9">')+
     FR("Konsumsi modul Sonoff (W)",'<input class="inp" id="eS" type="number" inputmode="decimal" min="0" max="500" step="any" placeholder="mis. 1">'))+
     FR("Catatan",'<input class="inp" id="eN" maxlength="200" placeholder="mis. lampu LED 9 W">')+
-    `<div class="note">${metered?"":"Estimasi kWh = beban × lama ON + konsumsi modul Sonoff × lama perangkat terdengar (ON maupun OFF). Modul Sonoff sendiri memakai energi tambahan walau relay OFF. "}Disimpan di dashboard.</div>
+    `<div class="note">${metered?"":"Estimasi kWh = beban × lama ON + konsumsi modul Sonoff × lama perangkat terdengar (ON maupun OFF). Modul Sonoff sendiri memakai energi tambahan walau relay OFF. "}Disimpan di HomeGW.</div>
      <div class="row" style="padding:6px 0 10px;gap:10px"><button class="btn pri" id="eSave">Simpan</button><span class="note" id="eMsg"></span></div>`;
   S.enDirty=false;
   $("dEn").addEventListener("input",()=>{S.enDirty=true;$("eMsg").textContent="";});
@@ -332,7 +332,7 @@ function buildSettings(d){
   $("bDelDev").onclick=async()=>{
     if(!confirm(`Hapus perangkat "${d.name}" (${d.id})? Perangkat dapat diadopsi kembali lewat mDNS nanti.`))return;
     try{
-      await api("/api/devices/"+encodeURIComponent(d.id),{method:"DELETE",headers:{"X-Dashboard":"1"}});
+      await api("/api/devices/"+encodeURIComponent(d.id),{method:"DELETE",headers:{"X-HomeGW":"1","X-Dashboard":"1"}});
       closeSheet();
       toast("Perangkat "+d.name+" berhasil dihapus");
     }catch(x){toast("Gagal menghapus: "+x.message);}
@@ -526,7 +526,7 @@ function renderReport(){
        const mm=Math.max(.01,...iot.map(x=>(sel.devices[x.id]||{}).kwh||0));
        const note=!md.known?"tak ada data":md.basis=="measured"?"Terukur"+(md.days?" · "+md.days+" hari tercatat":""):"Estimasi"+(md.unknown_sec?" · "+fmtAge(md.unknown_sec)+" tak diketahui":"");
        return`<div class="pdv"><div class="r"><span>${esc(d.name)}</span><span>${md.known?nf(md.kwh,2)+" kWh":"–"}</span></div><div class="dbar"><i class="${md.basis=="measured"?"m":""}" style="width:${md.known?Math.max(1,md.kwh/mm*100):0}%"></i></div><div class="n"><span>${esc(note)}</span><span>${md.known&&tar?rp(md.cost):""}</span></div></div>`;}).join("")}
-      <div class="note">Estimasi = daya (W) × lama ON dari riwayat; Terukur = meter perangkat (POWR). Bulan sebelum dashboard mencatat tidak ikut terhitung.</div></div>`;
+      <div class="note">Estimasi = daya (W) × lama ON dari riwayat; Terukur = meter perangkat (POWR). Bulan sebelum HomeGW mencatat tidak ikut terhitung.</div></div>`;
   }
   const b=$("sBody"),top=b.scrollTop;b.innerHTML=h;b.scrollTop=top;
   $("rDev").onchange=e=>{S.rid=e.target.value;renderReport();};

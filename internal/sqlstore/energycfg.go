@@ -3,7 +3,7 @@ package sqlstore
 import (
 	"database/sql"
 
-	"owrt-dashboard/internal/energy"
+	"homegw/internal/energy"
 )
 
 type energyCfg struct{ db *sql.DB }
