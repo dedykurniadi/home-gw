@@ -6,3 +6,12 @@ data/
 *.exe
 dashboard
 homegw
+
+# Android
+.gradle/
+build/
+*.iml
+local.properties
+.idea/
+*.apk
+*.aab
