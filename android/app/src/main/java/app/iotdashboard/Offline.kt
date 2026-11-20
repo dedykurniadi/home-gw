@@ -62,8 +62,9 @@ internal fun OfflineBanner(at: Long, modifier: Modifier = Modifier) {
 @Composable
 internal fun OfflineNotice(vm: MainViewModel) {
     val fresh by vm.fresh.collectAsStateWithLifecycle()
+    val refreshing by vm.refreshing.collectAsStateWithLifecycle()
     val devicesAt by vm.devicesAt.collectAsStateWithLifecycle()
     val cachedAt by vm.cachedAt.collectAsStateWithLifecycle()
-    if (fresh || (devicesAt == 0L && cachedAt == 0L)) return
+    if (fresh || refreshing || (devicesAt == 0L && cachedAt == 0L)) return
     OfflineBanner(if (cachedAt > 0) cachedAt else devicesAt)
 }

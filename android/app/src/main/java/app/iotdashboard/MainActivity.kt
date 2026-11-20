@@ -149,10 +149,12 @@ private fun Screen(vm: MainViewModel) {
     val url by vm.baseUrl.collectAsStateWithLifecycle()
     val pending by vm.pending.collectAsStateWithLifecycle()
     val fresh by vm.fresh.collectAsStateWithLifecycle()
+    val refreshing by vm.refreshing.collectAsStateWithLifecycle()
     val devicesAt by vm.devicesAt.collectAsStateWithLifecycle()
     val haptic = LocalHapticFeedback.current
     // Belum tersambung ke dashboard tetapi ada data simpanan: tile dibaca saja, hitungan waktu dibekukan.
-    val stale = devices.isNotEmpty() && !fresh
+    // Tidak dianggap stale saat proses refresh sedang berlangsung agar banner tidak berkedip sekilas.
+    val stale = devices.isNotEmpty() && !fresh && !refreshing
 
     var now by remember { mutableLongStateOf(System.currentTimeMillis() / 1000) }
     LaunchedEffect(Unit) {
@@ -228,7 +230,7 @@ private fun Screen(vm: MainViewModel) {
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Header(live = live, onSchedule = { showSched = true }, onSettings = { showSettings = true })
+            Header(live = live, refreshing = refreshing, onSchedule = { showSched = true }, onSettings = { showSettings = true })
             if (stale) OfflineBanner(devicesAt)
             Summary(energy = energy, active = onCount, total = devices.size, onOpen = { showReport = true })
             FilterChips(
@@ -306,7 +308,7 @@ private fun Pull(vm: MainViewModel, modifier: Modifier, content: @Composable () 
 }
 
 @Composable
-private fun Header(live: Boolean, onSchedule: () -> Unit, onSettings: () -> Unit) {
+private fun Header(live: Boolean, refreshing: Boolean = false, onSchedule: () -> Unit, onSettings: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -320,9 +322,13 @@ private fun Header(live: Boolean, onSchedule: () -> Unit, onSettings: () -> Unit
                     Modifier
                         .size(7.dp)
                         .clip(CircleShape)
-                        .background(if (live) Ok else Bad),
+                        .background(if (live) Ok else if (refreshing) Warn else Bad),
                 )
-                Text(if (live) "Terhubung ke router" else "Terputus", color = Mut, fontSize = 12.sp)
+                Text(
+                    if (live) "Terhubung ke router" else if (refreshing) "Menghubungkan…" else "Terputus",
+                    color = Mut,
+                    fontSize = 12.sp,
+                )
             }
         }
         Spacer(Modifier.weight(1f))
