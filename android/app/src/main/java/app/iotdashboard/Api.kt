@@ -1,16 +1,21 @@
 package app.iotdashboard
 
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.awaitCancellation
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resumeWithException
 
 /** Satu perangkat IoT (bentuk sama dengan State di dashboard). */
 data class Device(
@@ -260,56 +265,67 @@ class DashboardApi(
     suspend fun energy(): Energy = withContext(Dispatchers.IO) { parseEnergy(getJson("/api/energy")) }
 
     /**
-     * Mendengarkan aliran SSE /api/events. Memanggil [onLive] saat tersambung dan [onDevices] untuk
-     * tiap event "iot". Fungsi ini hanya selesai dengan melempar exception (koneksi putus) atau
-     * dibatalkan.
+     * Mendengarkan aliran WebSocket /api/ws. Memanggil [onLive] saat tersambung dan [onDevices]
+     * untuk tiap pesan bertipe "iot". Fungsi ini hanya selesai dengan melempar exception
+     * (koneksi putus) atau dibatalkan.
      */
-    suspend fun streamIot(onLive: () -> Unit, onDevices: (List<Device>, String) -> Unit): Unit = coroutineScope {
-        val c = open("/api/events", "GET", 45_000) // dashboard mengirim detak tiap 15 detik
-        c.setRequestProperty("Accept", "text/event-stream")
-        // Membaca baris bersifat blocking: saat dibatalkan, tutup koneksi agar pembacaan berhenti.
-        val watcher = launch(Dispatchers.IO) {
-            try {
-                awaitCancellation()
-            } finally {
-                c.disconnect()
-            }
-        }
-        try {
-            withContext(Dispatchers.IO) {
-                val code = c.responseCode
-                if (code != 200) throw ApiException(errorText(c, code))
-                onLive()
-                val r = c.inputStream.bufferedReader() // tanpa use{}: close() akan menguras aliran tak berujung
-                var ev = ""
-                val data = StringBuilder()
-                while (true) {
-                    val line = r.readLine() ?: break
-                    when {
-                        line.isEmpty() -> {
-                            if (ev == "iot" && data.isNotEmpty()) {
-                                try {
-                                    val raw = data.toString()
-                                    onDevices(parseDevices(JSONArray(raw)), raw)
-                                } catch (_: org.json.JSONException) {
-                                    // paket rusak: lewati
-                                }
+    suspend fun streamIot(onLive: () -> Unit, onDevices: (List<Device>, String) -> Unit): Unit {
+        // Ubah skema http(s) → ws(s) untuk WebSocket
+        val wsUrl = base.replaceFirst(Regex("^http"), "ws") + "/api/ws"
+
+        val client = OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(70, TimeUnit.SECONDS)   // server ping tiap ~54 detik
+            .pingInterval(30, TimeUnit.SECONDS)  // OkHttp kirim ping sendiri agar NAT tidak drop
+            .build()
+
+        val request = Request.Builder()
+            .url(wsUrl)
+            .addHeader("X-HomeGW", "1")
+            .addHeader("X-Dashboard", "1")
+            .build()
+
+        suspendCancellableCoroutine<Unit> { cont ->
+            val ws = client.newWebSocket(request, object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    onLive()
+                }
+
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    try {
+                        val msg = JSONObject(text)
+                        when (msg.optString("type")) {
+                            "iot" -> {
+                                val data = msg.optJSONArray("data") ?: return
+                                val raw = data.toString()
+                                onDevices(parseDevices(data), raw)
                             }
-                            ev = ""
-                            data.setLength(0)
+                            "error" -> {
+                                // abaikan: server melaporkan kesalahan internal; koneksi tetap hidup
+                            }
+                            // "net", "power", "wifi_history" – diabaikan untuk saat ini
                         }
-                        line.startsWith("event:") -> ev = line.substring(6).trim()
-                        line.startsWith("data:") -> {
-                            if (data.isNotEmpty()) data.append('\n')
-                            data.append(line.substring(5).trim())
-                        }
+                    } catch (_: org.json.JSONException) {
+                        // paket tidak dikenal: lewati
                     }
                 }
+
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    webSocket.close(1000, null)
+                    if (cont.isActive) cont.resumeWithException(ApiException("ws ditutup: $reason"))
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    if (cont.isActive) cont.resumeWithException(
+                        if (t is IOException) t else ApiException(t.message ?: "ws error")
+                    )
+                }
+            })
+
+            cont.invokeOnCancellation {
+                ws.close(1000, null)
+                client.dispatcher.executorService.shutdown()
             }
-            throw ApiException("koneksi ditutup")
-        } finally {
-            watcher.cancel()
-            c.disconnect()
         }
     }
 }
