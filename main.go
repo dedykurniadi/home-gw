@@ -115,6 +115,17 @@ func main() {
 	if err := loadJSON(*cfgPath, &cfg); err != nil {
 		log.Fatalf("config %s: %v", *cfgPath, err)
 	}
+
+	// Buat path relatif selalu mengacu pada direktori tempat config.json berada
+	cfgDir := filepath.Dir(*cfgPath)
+	resolvePath := func(p string) string {
+		if p == "" || filepath.IsAbs(p) {
+			return p
+		}
+		return filepath.Clean(filepath.Join(cfgDir, p))
+	}
+	cfg.DevicesFile = resolvePath(cfg.DevicesFile)
+
 	if cfg.Subnet == "" && cfg.LANIface != "" {
 		cfg.Subnet = ifaceSubnet(cfg.LANIface)
 	}
@@ -133,6 +144,8 @@ func main() {
 		} else {
 			dbPath = newDB
 		}
+	} else {
+		dbPath = resolvePath(dbPath)
 	}
 	sdb, err := sqlstore.Open(dbPath)
 	if err != nil {
@@ -292,6 +305,8 @@ func main() {
 		file := cfg.Sched.File
 		if file == "" {
 			file = filepath.Join(filepath.Dir(cfg.DevicesFile), "data", "schedules.json")
+		} else {
+			file = resolvePath(file)
 		}
 		var lat, lon *float64
 		if cfg.Location != nil {
@@ -309,6 +324,8 @@ func main() {
 		sch, err = sched.New(file, loc, lat, lon, mgr.Set, has)
 		if err != nil {
 			log.Printf("jadwal %s: %v (jadwal dimulai kosong; file tidak ditimpa sampai ada perubahan)", file, err)
+		} else {
+			log.Printf("jadwal: memuat %d scene dari %s", len(sch.Views()), file)
 		}
 		if olog != nil {
 			sch.SetNote(func(id, scene string) { olog.NoteCmd(id, "Scene: "+scene) })
