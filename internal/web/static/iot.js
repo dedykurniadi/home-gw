@@ -19,7 +19,8 @@ const ICO={
 const COL={comp:"#58a6ff",fan:"#2dd4bf",idle:"rgba(139,148,158,.35)",off:"rgba(139,148,158,.22)",gap:"rgba(248,81,73,.45)",on:"rgba(63,185,80,.6)"};
 const PSTATE={comp:"Kompresor ON",fan:"Fan saja",idle:"AC mati (standby)",off:"Relay OFF",gap:"Tidak ada data"};
 async function api(path,opt){
-  const r=await fetch(path,opt);
+  const url=(window.API_BASE&&path.startsWith("/"))?(window.API_BASE+path):path;
+  const r=await fetch(url,opt);
   let j=null;try{j=await r.json();}catch(x){}
   if(!r.ok){const e=new Error((j&&j.error)||("HTTP "+r.status));e.status=r.status;throw e;}
   return j;

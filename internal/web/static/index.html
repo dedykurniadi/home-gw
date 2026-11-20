@@ -204,7 +204,7 @@ window.delHist=async mac=>{
     if(ws&&ws.readyState===WebSocket.OPEN){
       ws.send(JSON.stringify({action:"delete_wifi_history",mac}));
     } else {
-      const res=await fetch("/api/wifi/history/"+encodeURIComponent(mac),{method:"DELETE",headers:{"X-HomeGW":"1"}});
+      const res=await fetch((window.API_BASE||"")+"/api/wifi/history/"+encodeURIComponent(mac),{method:"DELETE",headers:{"X-HomeGW":"1"}});
       if(!res.ok)throw new Error("HTTP "+res.status);
     }
     wifiHistory=wifiHistory.filter(h=>h.mac!==mac);
@@ -276,11 +276,15 @@ $("cams").innerHTML=cams.map((_,i)=>`<button>${i+1}</button>`).join("");
 $("cams").onclick=e=>{const b=e.target.closest("button");if(b)showCam([...$("cams").children].indexOf(b));};
 
 /* ---------- Data live (WebSocket) ---------- */
+window.API_BASE = (location.protocol === "file:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")
+  ? (localStorage.getItem("homegw_url") || "http://10.142.27.1:8009")
+  : "";
 let ws=null,wsTimer=null;
 function connectWS(){
   if(wsTimer){clearTimeout(wsTimer);wsTimer=null;}
-  const proto=location.protocol==="https:"?"wss:":"ws:";
-  ws=new WebSocket(proto+"//"+location.host+"/api/ws");
+  const host=window.API_BASE?window.API_BASE.replace(/^https?:\/\//,""):location.host;
+  const proto=(window.API_BASE.startsWith("https")||location.protocol==="https:")?"wss:":"ws:";
+  ws=new WebSocket(proto+"//"+host+"/api/ws");
   window.appWS=ws;
   ws.onopen=()=>{
     $("link").textContent="live";$("link").className="ok";
@@ -308,7 +312,7 @@ function connectWS(){
   };
 }
 connectWS();
-fetch("/api/state").then(r=>r.json()).then(s=>{
+fetch((window.API_BASE||"")+"/api/state").then(r=>r.json()).then(s=>{
   if(s.clients&&!clients.length){clients=s.clients;renderTable();}
   if(s.wifi_history&&!wifiHistory.length){wifiHistory=s.wifi_history;renderTable();}
   if(s.iot&&!iot.length){iot=s.iot;renderIot();}
@@ -394,7 +398,7 @@ async function loadChart(){
   const id=chartId;if(!id||view)return; // saat di-zoom, jangan menimpa tampilan
 
   try{
-    const r=await fetch("/api/power/"+encodeURIComponent(id)+"?hours="+hoursSel);
+    const r=await fetch((window.API_BASE||"")+"/api/power/"+encodeURIComponent(id)+"?hours="+hoursSel);
     if(!r.ok)throw new Error("HTTP "+r.status);
     const h=await r.json();if(id!==chartId)return;
     chartHist=h;renderChart(h);
