@@ -30,6 +30,24 @@ type Config struct {
 	NoPing        bool              // semua dianggap hidup (mode uji / non-root)
 	WiredHosts    []string          // IP perangkat kabel: status up/down dari ARP (arping bila ada), bukan hanya ICMP
 	WifiEvents    bool              // berlangganan event hostapd (ubus subscribe) agar konek/putus WiFi seketika
+	WifiHistStore WifiHistStore     // penyimpanan persisten SQLite untuk riwayat klien WiFi
+}
+
+// WifiHistoryItem mencatat riwayat perangkat yang pernah terhubung ke WiFi.
+type WifiHistoryItem struct {
+	MAC       string `json:"mac"`
+	IP        string `json:"ip"`
+	Name      string `json:"name"`
+	Band      string `json:"band"`
+	LastSeen  int64  `json:"last_seen"`  // unix timestamp detik saat terakhir aktif
+	Connected int64  `json:"connected"` // durasi terhubung saat sesi terakhir (detik)
+}
+
+type WifiHistStore interface {
+	All() ([]WifiHistoryItem, error)
+	Upsert(item WifiHistoryItem) error
+	Delete(mac string) error
+	Prune(olderThan time.Duration) error
 }
 
 type Client struct {
@@ -61,6 +79,8 @@ type Collector struct {
 	pinger *Pinger
 	// OnUpdate dipanggil dari goroutine collector setiap siklus.
 	OnUpdate func([]Client)
+	// OnWifiHistory dipanggil saat riwayat klien WiFi berubah.
+	OnWifiHistory func([]WifiHistoryItem)
 
 	mu        sync.RWMutex
 	clients   []Client
@@ -74,6 +94,7 @@ type Collector struct {
 	arpUp     map[string]bool
 	wifi      map[string]wifiInfo
 	conn      map[string]int64
+	wifiHist  map[string]WifiHistoryItem
 }
 
 func New(cfg Config) *Collector {
@@ -89,7 +110,20 @@ func New(cfg Config) *Collector {
 	if cfg.ARPFile == "" {
 		cfg.ARPFile = "/proc/net/arp"
 	}
-	c := &Collector{cfg: cfg, states: map[string]*hostState{}, macIP: map[string]string{}, kickCh: make(chan struct{}, 1)}
+	c := &Collector{
+		cfg:      cfg,
+		states:   map[string]*hostState{},
+		macIP:    map[string]string{},
+		kickCh:   make(chan struct{}, 1),
+		wifiHist: map[string]WifiHistoryItem{},
+	}
+	if cfg.WifiHistStore != nil {
+		if items, err := cfg.WifiHistStore.All(); err == nil {
+			for _, it := range items {
+				c.wifiHist[strings.ToLower(it.MAC)] = it
+			}
+		}
+	}
 	if len(cfg.WiredHosts) > 0 {
 		c.arping, _ = exec.LookPath("arping")
 	}
@@ -372,8 +406,63 @@ func (c *Collector) store(rows []Client) {
 	for k, v := range macIP {
 		c.macIP[k] = v
 	}
+	now := time.Now().Unix()
+	for _, r := range rows {
+		if r.HasSignal && r.MAC != "" {
+			macLower := strings.ToLower(r.MAC)
+			band := ""
+			if strings.HasPrefix(r.Conn, "WiFi ") {
+				band = strings.TrimPrefix(r.Conn, "WiFi ")
+			}
+			it := WifiHistoryItem{
+				MAC:       macLower,
+				IP:        r.IP,
+				Name:      r.Name,
+				Band:      band,
+				LastSeen:  now,
+				Connected: r.Connected,
+			}
+			c.wifiHist[macLower] = it
+			if c.cfg.WifiHistStore != nil {
+				go c.cfg.WifiHistStore.Upsert(it)
+			}
+		}
+	}
 	c.mu.Unlock()
 	if c.OnUpdate != nil {
 		c.OnUpdate(append([]Client(nil), rows...))
 	}
+	if c.OnWifiHistory != nil {
+		c.OnWifiHistory(c.WifiHistory())
+	}
+}
+
+// WifiHistory mengembalikan riwayat klien WiFi yang saat ini TIDAK aktif (sedang terputus).
+func (c *Collector) WifiHistory() []WifiHistoryItem {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var out []WifiHistoryItem
+	for mac, it := range c.wifiHist {
+		if _, active := c.wifi[mac]; active {
+			continue
+		}
+		out = append(out, it)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LastSeen > out[j].LastSeen })
+	return out
+}
+
+// DeleteWifiHistory menghapus entri riwayat WiFi dari memori dan database.
+func (c *Collector) DeleteWifiHistory(mac string) error {
+	macLower := strings.ToLower(strings.TrimSpace(mac))
+	c.mu.Lock()
+	delete(c.wifiHist, macLower)
+	c.mu.Unlock()
+	if c.cfg.WifiHistStore != nil {
+		_ = c.cfg.WifiHistStore.Delete(macLower)
+	}
+	if c.OnWifiHistory != nil {
+		c.OnWifiHistory(c.WifiHistory())
+	}
+	return nil
 }

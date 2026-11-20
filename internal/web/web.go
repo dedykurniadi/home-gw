@@ -69,6 +69,10 @@ type Handlers struct {
 	DeleteDevice func(id string) error
 	// Devices (opsional): daftar konfigurasi perangkat tersimpan.
 	Devices func() any
+	// WifiHistory (opsional): riwayat klien WiFi yang pernah terhubung.
+	WifiHistory func() any
+	// DeleteWifiHistory (opsional): hapus entri riwayat WiFi berdasarkan MAC.
+	DeleteWifiHistory func(mac string) error
 }
 
 type event struct {
@@ -187,6 +191,10 @@ func (c *wsClient) readPump(h Handlers) {
 			if h.Discover != nil {
 				h.Discover()
 			}
+		case "delete_wifi_history":
+			if h.DeleteWifiHistory != nil && req.ID != "" {
+				_ = h.DeleteWifiHistory(req.ID)
+			}
 		}
 	}
 }
@@ -291,6 +299,9 @@ func New(h Handlers, hub *Hub) http.Handler {
 		}
 		if h.Power != nil {
 			out["power"] = h.Power()
+		}
+		if h.WifiHistory != nil {
+			out["wifi_history"] = h.WifiHistory()
 		}
 		writeJSON(w, 200, out)
 	})
@@ -418,6 +429,9 @@ func New(h Handlers, hub *Hub) http.Handler {
 		if h.Power != nil {
 			initial["power"] = h.Power
 		}
+		if h.WifiHistory != nil {
+			initial["wifi_history"] = h.WifiHistory
+		}
 		for name, get := range initial {
 			data, _ := json.Marshal(get())
 			wsData, _ := json.Marshal(map[string]any{
@@ -456,6 +470,9 @@ func New(h Handlers, hub *Hub) http.Handler {
 		}
 		if h.Power != nil {
 			initial["power"] = h.Power
+		}
+		if h.WifiHistory != nil {
+			initial["wifi_history"] = h.WifiHistory
 		}
 		for name, get := range initial {
 			data, _ := json.Marshal(get())
@@ -638,5 +655,40 @@ func New(h Handlers, hub *Hub) http.Handler {
 		}
 		writeJSON(w, 200, map[string]string{"ok": "true"})
 	})
+
+	if h.WifiHistory != nil {
+		mux.HandleFunc("/api/wifi/history", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				w.Header().Set("Allow", "GET")
+				writeJSON(w, 405, map[string]string{"error": "gunakan GET"})
+				return
+			}
+			w.Header().Set("Cache-Control", "no-store")
+			writeJSON(w, 200, h.WifiHistory())
+		})
+	}
+	if h.DeleteWifiHistory != nil {
+		mux.HandleFunc("/api/wifi/history/", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodDelete {
+				w.Header().Set("Allow", "DELETE")
+				writeJSON(w, 405, map[string]string{"error": "gunakan DELETE"})
+				return
+			}
+			if !hasAuthHeader(r) {
+				writeJSON(w, 403, map[string]string{"error": "DELETE dengan header X-HomeGW diperlukan"})
+				return
+			}
+			mac := strings.TrimPrefix(r.URL.Path, "/api/wifi/history/")
+			if mac == "" {
+				writeJSON(w, 400, map[string]string{"error": "MAC tidak valid"})
+				return
+			}
+			if err := h.DeleteWifiHistory(mac); err != nil {
+				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, 200, map[string]string{"ok": "true"})
+		})
+	}
 	return mux
 }

@@ -225,3 +225,47 @@ func TestBuildRowsIncludesWiFiStationsWithKnownIP(t *testing.T) {
 		t.Fatalf("data baris wifi salah: %+v", rows[0])
 	}
 }
+
+func TestCollectorWifiHistory(t *testing.T) {
+	c := New(Config{NoPing: true})
+	// Simulasi 1 klien aktif di WiFi
+	c.wifi = map[string]wifiInfo{"aa:bb:cc:dd:ee:01": {"5G", -50}}
+	c.conn = map[string]int64{"aa:bb:cc:dd:ee:01": 300}
+	r := []Client{{
+		IP:        "10.0.0.50",
+		MAC:       "aa:bb:cc:dd:ee:01",
+		Name:      "MyPhone",
+		Conn:      "WiFi 5G",
+		HasSignal: true,
+		Signal:    -50,
+		Connected: 300,
+	}}
+	c.store(r)
+
+	// Saat masih aktif, riwayat offline harus kosong
+	if hist := c.WifiHistory(); len(hist) != 0 {
+		t.Fatalf("klien aktif tidak boleh masuk riwayat offline: %+v", hist)
+	}
+
+	// Klien diskonek (hilang dari c.wifi)
+	c.wifi = map[string]wifiInfo{}
+	c.conn = map[string]int64{}
+	r[0].HasSignal = false
+	c.store(r)
+
+	hist := c.WifiHistory()
+	if len(hist) != 1 {
+		t.Fatalf("setelah diskonek harus ada di riwayat: len=%d", len(hist))
+	}
+	if hist[0].MAC != "aa:bb:cc:dd:ee:01" || hist[0].Name != "MyPhone" || hist[0].Band != "5G" {
+		t.Fatalf("data riwayat salah: %+v", hist[0])
+	}
+
+	// Hapus riwayat
+	if err := c.DeleteWifiHistory("aa:bb:cc:dd:ee:01"); err != nil {
+		t.Fatalf("hapus riwayat: %v", err)
+	}
+	if len(c.WifiHistory()) != 0 {
+		t.Fatal("riwayat harus kosong setelah dihapus")
+	}
+}

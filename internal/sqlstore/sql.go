@@ -16,6 +16,7 @@ var schemaStmts = []string{
 	`CREATE INDEX IF NOT EXISTS onoff_src_id_t ON onoff_src(id, t)`,
 	`CREATE TABLE IF NOT EXISTS energy_daily(dev TEXT NOT NULL, day TEXT NOT NULL, kwh REAL NOT NULL, PRIMARY KEY(dev, day))`,
 	`CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, name TEXT NOT NULL, key TEXT NOT NULL, mac TEXT NOT NULL DEFAULT '', ip TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT 'switch', watt REAL NOT NULL DEFAULT 0, standby_watt REAL NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')))`,
+	`CREATE TABLE IF NOT EXISTS wifi_history(mac TEXT PRIMARY KEY, ip TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '', band TEXT NOT NULL DEFAULT '', last_seen INTEGER NOT NULL DEFAULT 0, connected INTEGER NOT NULL DEFAULT 0)`,
 }
 
 const (
@@ -66,4 +67,15 @@ const (
 		ON CONFLICT(id) DO UPDATE SET name = excluded.name, key = excluded.key, mac = excluded.mac,
 		ip = excluded.ip, kind = excluded.kind, watt = excluded.watt, standby_watt = excluded.standby_watt`
 	qDevDelete = `DELETE FROM devices WHERE id = ?`
+
+	qWifiHistAll    = `SELECT mac, ip, name, band, last_seen, connected FROM wifi_history ORDER BY last_seen DESC`
+	qWifiHistUpsert = `INSERT INTO wifi_history(mac, ip, name, band, last_seen, connected) VALUES(?, ?, ?, ?, ?, ?)
+		ON CONFLICT(mac) DO UPDATE SET
+			ip = CASE WHEN excluded.ip != '' AND excluded.ip != '-' THEN excluded.ip ELSE wifi_history.ip END,
+			name = CASE WHEN excluded.name != '' THEN excluded.name ELSE wifi_history.name END,
+			band = CASE WHEN excluded.band != '' THEN excluded.band ELSE wifi_history.band END,
+			last_seen = excluded.last_seen,
+			connected = CASE WHEN excluded.connected > 0 THEN excluded.connected ELSE wifi_history.connected END`
+	qWifiHistDelete = `DELETE FROM wifi_history WHERE mac = ?`
+	qWifiHistPrune  = `DELETE FROM wifi_history WHERE last_seen < ?`
 )

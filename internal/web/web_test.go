@@ -451,3 +451,74 @@ func TestDeviceEndpoints(t *testing.T) {
 	}
 	delResp.Body.Close()
 }
+
+func TestWifiHistoryAPI(t *testing.T) {
+	hub := NewHub()
+	var deletedMAC string
+	srv := httptest.NewServer(New(Handlers{
+		Net: func() any { return []map[string]string{{"ip": "10.0.0.1"}} },
+		IoT: func() any { return []map[string]string{} },
+		WifiHistory: func() any {
+			return []map[string]any{
+				{"mac": "aa:bb:cc:dd:ee:ff", "ip": "10.0.0.50", "name": "Phone", "band": "5 GHz", "last_seen": 1700000000},
+			}
+		},
+		DeleteWifiHistory: func(mac string) error {
+			deletedMAC = mac
+			return nil
+		},
+	}, hub))
+	defer srv.Close()
+
+	// 1. GET /api/state contains wifi_history
+	resp, err := http.Get(srv.URL + "/api/state")
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("state failed: %v", err)
+	}
+	var state map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&state)
+	resp.Body.Close()
+	if _, ok := state["wifi_history"]; !ok {
+		t.Fatalf("state harus memuat wifi_history: %+v", state)
+	}
+
+	// 2. GET /api/wifi/history
+	resp, err = http.Get(srv.URL + "/api/wifi/history")
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("GET /api/wifi/history failed: %v", err)
+	}
+	var hist []map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&hist)
+	resp.Body.Close()
+	if len(hist) != 1 || hist[0]["mac"] != "aa:bb:cc:dd:ee:ff" {
+		t.Fatalf("GET /api/wifi/history invalid response: %+v", hist)
+	}
+
+	// 3. DELETE /api/wifi/history/{mac} without header -> 403
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/wifi/history/aa:bb:cc:dd:ee:ff", nil)
+	delResp, err := http.DefaultClient.Do(req)
+	if err != nil || delResp.StatusCode != 403 {
+		t.Fatalf("DELETE without header should be 403, got %d", delResp.StatusCode)
+	}
+	delResp.Body.Close()
+
+	// 4. DELETE /api/wifi/history/{mac} with X-HomeGW: 1 -> 200
+	req, _ = http.NewRequest(http.MethodDelete, srv.URL+"/api/wifi/history/aa:bb:cc:dd:ee:ff", nil)
+	req.Header.Set("X-HomeGW", "1")
+	delResp, err = http.DefaultClient.Do(req)
+	if err != nil || delResp.StatusCode != 200 || deletedMAC != "aa:bb:cc:dd:ee:ff" {
+		t.Fatalf("DELETE with header failed: %v %d %s", err, delResp.StatusCode, deletedMAC)
+	}
+	delResp.Body.Close()
+
+	// 5. DELETE with X-Dashboard: 1 (legacy backward-compat header) -> 200
+	deletedMAC = ""
+	req, _ = http.NewRequest(http.MethodDelete, srv.URL+"/api/wifi/history/11:22:33:44:55:66", nil)
+	req.Header.Set("X-Dashboard", "1")
+	delResp, err = http.DefaultClient.Do(req)
+	if err != nil || delResp.StatusCode != 200 || deletedMAC != "11:22:33:44:55:66" {
+		t.Fatalf("DELETE with X-Dashboard failed: %v %d %s", err, delResp.StatusCode, deletedMAC)
+	}
+	delResp.Body.Close()
+}
+

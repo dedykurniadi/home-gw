@@ -182,6 +182,7 @@ func main() {
 		WifiEvents:    cfg.WifiEvents == nil || *cfg.WifiEvents,
 		Aliases:       aliases,
 		NoPing:        cfg.NoPing,
+		WifiHistStore: sdb.WifiHist(),
 	})
 	mgr := sonoff.NewManager(devs, col.IPByMAC)
 	mgr.ResolveMAC = col.MACByIP
@@ -240,6 +241,7 @@ func main() {
 		}
 	}
 	col.OnUpdate = func(c []netdata.Client) { hub.Publish("net", c) }
+	col.OnWifiHistory = func(h []netdata.WifiHistoryItem) { hub.Publish("wifi_history", h) }
 	mgr.OnChange = func(s []sonoff.State) { hub.Publish("iot", s) }
 
 	netFn := func() any { return col.Snapshot() }
@@ -433,6 +435,12 @@ func main() {
 		},
 		Devices: func() any {
 			return mgr.Devices()
+		},
+		WifiHistory: func() any {
+			return col.WifiHistory()
+		},
+		DeleteWifiHistory: func(mac string) error {
+			return col.DeleteWifiHistory(mac)
 		},
 	}, hub)
 

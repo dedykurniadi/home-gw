@@ -37,6 +37,11 @@ tr.off td{opacity:.5}
 .bars{display:inline-flex;gap:2px;align-items:flex-end;height:14px;margin-right:7px;vertical-align:middle}
 .bars i{width:3px;background:#30363d;border-radius:1px}
 .bars i:nth-child(1){height:4px}.bars i:nth-child(2){height:7px}.bars i:nth-child(3){height:10px}.bars i:nth-child(4){height:14px}
+.sec-row td{background:#13181f;color:var(--mut);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;padding:6px 10px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.sec-row:hover td{background:#13181f}
+.sec-row span{color:var(--txt);font-weight:normal;text-transform:none;letter-spacing:normal;margin-left:4px}
+.btn-del{background:none;border:none;color:var(--mut);cursor:pointer;font-size:13px;padding:1px 6px;border-radius:4px;line-height:1}
+.btn-del:hover{color:var(--bad);background:rgba(248,81,73,.15)}
 .right{display:grid;grid-template-rows:1.25fr 1fr;gap:10px;min-height:0}
 .view{flex:1;min-height:0;position:relative;background:#000;display:grid;place-items:center;overflow:hidden}
 .fake{width:100%;height:100%;background:repeating-linear-gradient(0deg,#0b0f14 0 3px,#10161d 3px 6px);display:grid;place-items:center;color:var(--mut);text-align:center}
@@ -151,13 +156,19 @@ tr.off td{opacity:.5}
 const $=id=>document.getElementById(id);
 // Hostname berasal dari perangkat di jaringan, jadi semua teks dinamis wajib di-escape.
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-let clients=[],iot=[],power={},filter="all",energy=null;
+let clients=[],iot=[],power={},wifiHistory=[],filter="all",energy=null;
 
+const pad=n=>String(n).padStart(2,"0");
 function fmtDur(s){
   if(s==null||s<0)return "-";
-  const d=Math.floor(s/86400),h=Math.floor(s/3600)%24,m=Math.floor(s/60)%60,x=s%60,p=n=>String(n).padStart(2,"0");
-  return (d?d+"d ":"")+p(h)+":"+p(m)+":"+p(x);
+  const d=Math.floor(s/86400),h=Math.floor(s/3600)%24,m=Math.floor(s/60)%60,x=s%60;
+  return (d?d+"d ":"")+pad(h)+":"+pad(m)+":"+pad(x);
 }
+function fmtSpan(s){
+  s=Math.max(0,Math.round(s));const h=Math.floor(s/3600),m=Math.floor(s/60)%60,x=s%60;
+  return h?`${h}j ${pad(m)}m`:m?`${m}m ${pad(x)}s`:`${x}s`;
+}
+function fmtAge(s){s=Math.max(0,Math.round(s));const d=Math.floor(s/86400);return d?`${d}hr ${Math.floor(s/3600)%24}j`:fmtSpan(s);}
 function sig(c){
   if(!c.has_signal)return '<span class="mono">—</span>';
   const d=c.signal,n=d>-55?4:d>-65?3:d>-75?2:1,col=n>=3?'var(--ok)':n==2?'var(--warn)':'var(--bad)';
@@ -167,16 +178,70 @@ function sig(c){
 const isWifi=c=>c.conn.startsWith("WiFi");
 function match(c){return filter=="all"||(filter=="wifi"&&isWifi(c))||(filter=="dhcp"&&c.src=="DHCP")||(filter=="static"&&c.src=="Static");}
 
+function renderWifiRow(c){
+  const rtt=!c.up?'<span style="color:var(--bad)">down</span>':(c.rtt>=0?`<span style="color:${c.rtt>100?'var(--warn)':'var(--ok)'}">${c.rtt<10?c.rtt.toFixed(1):Math.round(c.rtt)} ms</span>`:'-');
+  return `<tr class="${c.up?'':'off'}"><td><span class="dot ${c.up?'up':'down'}"></span></td>
+    <td>${esc(c.name)||'<span class="mono">-</span>'}</td><td class="mono">${esc(c.ip)}</td><td class="mono">${esc(c.mac)||'-'}</td>
+    <td><span class="tag t-wifi">${esc(c.conn)}</span></td>
+    <td><span class="tag ${c.src=='DHCP'?'t-dhcp':'t-static'}">${esc(c.src)}</span></td>
+    <td>${sig(c)}</td><td class="mono">${fmtDur(c.connected)}</td><td>${rtt}</td></tr>`;
+}
+
+function renderHistRow(h){
+  const age=Math.max(0,Date.now()/1000-h.last_seen);
+  return `<tr class="off"><td><span class="dot down" title="Terputus"></span></td>
+    <td>${esc(h.name)||'<span class="mono">-</span>'}</td><td class="mono">${esc(h.ip)||'-'}</td><td class="mono">${esc(h.mac)||'-'}</td>
+    <td><span class="tag t-wifi">${esc(h.band)||'WiFi'}</span></td>
+    <td><span class="tag" style="border-color:var(--line);color:var(--mut)">Riwayat</span></td>
+    <td><span class="mono">—</span></td>
+    <td class="mono" title="Durasi sesi terakhir">${fmtDur(h.connected)}</td>
+    <td><div style="display:flex;align-items:center;justify-content:space-between"><span title="Terakhir terhubung: ${new Date(h.last_seen*1000).toLocaleString('id-ID')}">${fmtAge(age)} lalu</span><button class="btn-del" onclick="delHist('${esc(h.mac)}')" title="Hapus dari riwayat">✕</button></div></td></tr>`;
+}
+
+window.delHist=async mac=>{
+  if(!mac)return;
+  try{
+    if(ws&&ws.readyState===WebSocket.OPEN){
+      ws.send(JSON.stringify({action:"delete_wifi_history",mac}));
+    } else {
+      const res=await fetch("/api/wifi/history/"+encodeURIComponent(mac),{method:"DELETE",headers:{"X-HomeGW":"1"}});
+      if(!res.ok)throw new Error("HTTP "+res.status);
+    }
+    wifiHistory=wifiHistory.filter(h=>h.mac!==mac);
+    renderTable();
+    toast("Riwayat dihapus");
+  }catch(e){
+    toast("Gagal menghapus: "+(e.message||e));
+  }
+};
+
 function renderTable(){
-  const rows=clients.filter(match);
-  $("tb").innerHTML=rows.map(c=>{
-    const rtt=!c.up?'<span style="color:var(--bad)">down</span>':(c.rtt>=0?`<span style="color:${c.rtt>100?'var(--warn)':'var(--ok)'}">${c.rtt<10?c.rtt.toFixed(1):Math.round(c.rtt)} ms</span>`:'-');
-    return `<tr class="${c.up?'':'off'}"><td><span class="dot ${c.up?'up':'down'}"></span></td>
-      <td>${esc(c.name)||'<span class="mono">-</span>'}</td><td class="mono">${esc(c.ip)}</td><td class="mono">${esc(c.mac)||'-'}</td>
-      <td><span class="tag ${isWifi(c)?'t-wifi':'t-lan'}">${esc(c.conn)}</span></td>
-      <td><span class="tag ${c.src=='DHCP'?'t-dhcp':'t-static'}">${esc(c.src)}</span></td>
-      <td>${sig(c)}</td><td class="mono">${fmtDur(c.connected)}</td><td>${rtt}</td></tr>`;
-  }).join("");
+  if(filter==="wifi"){
+    const active=clients.filter(isWifi);
+    let html=`<tr class="sec-row"><td colspan="9">Aktif <span>(${active.length})</span></td></tr>`;
+    if(!active.length){
+      html+=`<tr><td colspan="9" style="text-align:center;color:var(--mut);padding:14px">Tidak ada klien WiFi yang sedang aktif</td></tr>`;
+    } else {
+      html+=active.map(renderWifiRow).join("");
+    }
+    html+=`<tr class="sec-row"><td colspan="9">Riwayat / Terputus <span>(${wifiHistory.length})</span></td></tr>`;
+    if(!wifiHistory.length){
+      html+=`<tr><td colspan="9" style="text-align:center;color:var(--mut);padding:14px">Belum ada riwayat klien WiFi yang terputus</td></tr>`;
+    } else {
+      html+=wifiHistory.map(renderHistRow).join("");
+    }
+    $("tb").innerHTML=html;
+  } else {
+    const rows=clients.filter(match);
+    $("tb").innerHTML=rows.map(c=>{
+      const rtt=!c.up?'<span style="color:var(--bad)">down</span>':(c.rtt>=0?`<span style="color:${c.rtt>100?'var(--warn)':'var(--ok)'}">${c.rtt<10?c.rtt.toFixed(1):Math.round(c.rtt)} ms</span>`:'-');
+      return `<tr class="${c.up?'':'off'}"><td><span class="dot ${c.up?'up':'down'}"></span></td>
+        <td>${esc(c.name)||'<span class="mono">-</span>'}</td><td class="mono">${esc(c.ip)}</td><td class="mono">${esc(c.mac)||'-'}</td>
+        <td><span class="tag ${isWifi(c)?'t-wifi':'t-lan'}">${esc(c.conn)}</span></td>
+        <td><span class="tag ${c.src=='DHCP'?'t-dhcp':'t-static'}">${esc(c.src)}</span></td>
+        <td>${sig(c)}</td><td class="mono">${fmtDur(c.connected)}</td><td>${rtt}</td></tr>`;
+    }).join("");
+  }
   const up=clients.filter(c=>c.up).length;
   $("sTot").textContent=clients.length;$("sOn").textContent=up;$("sOff").textContent=clients.length-up;
   const n={all:clients.length,wifi:clients.filter(isWifi).length,dhcp:clients.filter(c=>c.src=="DHCP").length,static:clients.filter(c=>c.src=="Static").length};
@@ -199,7 +264,6 @@ function fmtCoarse(s){
   const d=Math.floor(s/86400),h=Math.floor(s/3600)%24,m=Math.floor(s/60)%60;
   return d?`${d}hr ${h}j`:s>=3600?`${Math.floor(s/3600)}j ${m}m`:`${m}m`;
 }
-function fmtAge(s){s=Math.max(0,Math.round(s));const d=Math.floor(s/86400);return d?`${d}hr ${Math.floor(s/3600)%24}j`:fmtSpan(s);}
 function toast(msg){const t=$("toast");t.textContent=msg;t.style.display="block";clearTimeout(toast.t);toast.t=setTimeout(()=>t.style.display="none",4000);}
 /* ---------- Kamera (placeholder; WebRTC menyusul) ---------- */
 const cams=["Kamera 1","Kamera 2","Kamera 3","Kamera 4","Kamera 5","Kamera 6"];
@@ -233,6 +297,7 @@ function connectWS(){
     try{
       const msg=JSON.parse(e.data);
       if(msg.type==="net"){clients=msg.data||[];renderTable();}
+      else if(msg.type==="wifi_history"){wifiHistory=msg.data||[];renderTable();}
       else if(msg.type==="iot"){iot=msg.data||[];renderIot();}
       else if(msg.type==="power"){const first=!Object.keys(power).length;power=msg.data||{};if(first)renderIot();updateChips();}
       else if(msg.type==="error"&&msg.data){
@@ -243,15 +308,16 @@ function connectWS(){
   };
 }
 connectWS();
+fetch("/api/state").then(r=>r.json()).then(s=>{
+  if(s.clients&&!clients.length){clients=s.clients;renderTable();}
+  if(s.wifi_history&&!wifiHistory.length){wifiHistory=s.wifi_history;renderTable();}
+  if(s.iot&&!iot.length){iot=s.iot;renderIot();}
+  if(s.power&&!Object.keys(power).length){power=s.power;renderIot();updateChips();}
+}).catch(()=>{});
 
 /* ---------- Log daya: badge kompresor + popup grafik ---------- */
-const pad=n=>String(n).padStart(2,"0");
 const hhmm=t=>{const d=new Date(t*1000);return pad(d.getHours())+":"+pad(d.getMinutes());};
 const hhmmss=t=>hhmm(t)+":"+pad(new Date(t*1000).getSeconds());
-function fmtSpan(s){
-  s=Math.max(0,Math.round(s));const h=Math.floor(s/3600),m=Math.floor(s/60)%60,x=s%60;
-  return h?`${h}j ${pad(m)}m`:m?`${m}m ${pad(x)}s`:`${x}s`;
-}
 function chipText(p,detail){
   const age=Math.max(0,Date.now()/1000-p.since),a=detail?fmtSpan(age):fmtCoarse(age),full=fmtSpan(age);
   if(p.state=="comp")return["comp","❄ "+a,"Kompresor ON selama "+full];
@@ -266,7 +332,12 @@ function updateChips(){
     const[c,t,tt]=chipText(p);el.className="chip "+c;el.textContent=t;el.title=tt;
   });
 }
-setInterval(()=>{updateChips();if(window.tickIot)tickIot();},1000);
+let secTick=0;
+setInterval(()=>{
+  updateChips();
+  if(window.tickIot)tickIot();
+  if(filter==="wifi"&&++secTick%5===0)renderTable();
+},1000);
 
 let chartId=null,chartHist=null,chartTimer=null;
 const STATE_LBL={comp:"Kompresor ON",fan:"Kompresor OFF (fan saja)",idle:"AC mati (standby)",off:"Relay OFF",gap:"Tidak ada data"};
