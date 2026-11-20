@@ -17,6 +17,7 @@ var schemaStmts = []string{
 	`CREATE TABLE IF NOT EXISTS energy_daily(dev TEXT NOT NULL, day TEXT NOT NULL, kwh REAL NOT NULL, PRIMARY KEY(dev, day))`,
 	`CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, name TEXT NOT NULL, key TEXT NOT NULL, mac TEXT NOT NULL DEFAULT '', ip TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT 'switch', watt REAL NOT NULL DEFAULT 0, standby_watt REAL NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')))`,
 	`CREATE TABLE IF NOT EXISTS wifi_history(mac TEXT PRIMARY KEY, ip TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '', band TEXT NOT NULL DEFAULT '', last_seen INTEGER NOT NULL DEFAULT 0, connected INTEGER NOT NULL DEFAULT 0)`,
+	`CREATE TABLE IF NOT EXISTS scenes(id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', triggers TEXT NOT NULL DEFAULT '[]', actions TEXT NOT NULL DEFAULT '[]', days TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 1, last TEXT NOT NULL DEFAULT '[]')`,
 }
 
 const (
@@ -78,4 +79,10 @@ const (
 			connected = CASE WHEN excluded.connected > 0 THEN excluded.connected ELSE wifi_history.connected END`
 	qWifiHistDelete = `DELETE FROM wifi_history WHERE mac = ?`
 	qWifiHistPrune  = `DELETE FROM wifi_history WHERE last_seen < ?`
+
+	qSceneAll    = `SELECT id, name, triggers, actions, days, enabled, last FROM scenes ORDER BY id`
+	qSceneSave   = `INSERT INTO scenes(id, name, triggers, actions, days, enabled, last) VALUES(?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET name = excluded.name, triggers = excluded.triggers, actions = excluded.actions,
+		days = excluded.days, enabled = excluded.enabled, last = excluded.last`
+	qSceneDelete = `DELETE FROM scenes WHERE id = ?`
 )

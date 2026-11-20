@@ -87,6 +87,13 @@ type RunStore interface {
 	Prune(before int64) error
 }
 
+// SceneStore menyimpan aturan scene di SQLite.
+type SceneStore interface {
+	All() ([]Scene, error)
+	Save(s Scene) error
+	Delete(id string) error
+}
+
 // SceneView = Scene + label tampilan + waktu jalan berikutnya.
 type SceneView struct {
 	Scene
@@ -107,11 +114,12 @@ type Engine struct {
 	name func(id string) (string, bool) // nama perangkat; ok=false bila tidak ada
 	now  func() time.Time
 
-	mu      sync.Mutex
-	scenes  []Scene
-	runs    []Run
-	store   RunStore
-	pruned  time.Time
+	mu         sync.Mutex
+	scenes     []Scene
+	runs       []Run
+	store      RunStore
+	sceneStore SceneStore
+	pruned     time.Time
 	pending map[string]map[int]bool // "scene|pemicu|waktu" -> indeks aksi yang sudah sukses (selama jendela retry)
 	errs    map[string][]Fail
 }
@@ -218,7 +226,41 @@ func New(path string, loc *time.Location, lat, lon *float64, set func(id, cmd st
 	return e, nil
 }
 
+// SetSceneStore menghubungkan penyimpanan SQLite untuk aturan scene.
+// Bila di database belum ada aturan tapi ada dari file JSON / memori,
+// scene akan otomatis diimpor ke SQLite.
+func (e *Engine) SetSceneStore(st SceneStore) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.sceneStore = st
+	if st == nil {
+		return
+	}
+	dbScenes, err := st.All()
+	if err == nil && len(dbScenes) > 0 {
+		e.scenes = dbScenes
+		log.Printf("scene: memuat %d aturan dari database SQLite", len(e.scenes))
+		return
+	}
+	if len(e.scenes) > 0 {
+		log.Printf("scene: mengimpor %d aturan ke database SQLite...", len(e.scenes))
+		for _, s := range e.scenes {
+			if err := st.Save(s); err != nil {
+				log.Printf("scene: gagal impor aturan %s: %v", s.ID, err)
+			}
+		}
+	}
+}
+
 func (e *Engine) saveLocked() error {
+	if e.sceneStore != nil {
+		for _, s := range e.scenes {
+			_ = e.sceneStore.Save(s)
+		}
+	}
+	if e.path == "" {
+		return nil
+	}
 	b, _ := json.MarshalIndent(e.scenes, "", " ")
 	if err := os.MkdirAll(filepath.Dir(e.path), 0o755); err != nil {
 		return err
@@ -687,6 +729,9 @@ func (e *Engine) Delete(id string) error {
 	for i := range e.scenes {
 		if e.scenes[i].ID == id {
 			e.scenes = append(e.scenes[:i], e.scenes[i+1:]...)
+			if e.sceneStore != nil {
+				_ = e.sceneStore.Delete(id)
+			}
 			return e.saveLocked()
 		}
 	}

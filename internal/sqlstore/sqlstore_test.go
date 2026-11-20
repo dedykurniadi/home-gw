@@ -189,3 +189,54 @@ func TestSchedLogRoundTrip(t *testing.T) {
 		t.Fatalf("Prune: %+v", rs)
 	}
 }
+
+func TestSceneStoreRoundTrip(t *testing.T) {
+	d := openDB(t, filepath.Join(t.TempDir(), "t.db"))
+	st := d.Scenes()
+	all, err := st.All()
+	if err != nil || len(all) != 0 {
+		t.Fatalf("All kosong: %v %v", all, err)
+	}
+
+	sc := sched.Scene{
+		ID:       "s1",
+		Name:     "Morning",
+		Triggers: []sched.Trigger{{Type: "sunrise", Offset: 10}},
+		Actions:  []sched.Action{{Device: "dev1", Action: "off"}, {Device: "dev2", Action: "off"}},
+		Days:     []int{1, 2, 3, 4, 5},
+		Enabled:  true,
+		Last:     []int64{12345678},
+	}
+	if err := st.Save(sc); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	all, err = st.All()
+	if err != nil || len(all) != 1 {
+		t.Fatalf("All setelah save: len=%d %v", len(all), err)
+	}
+	got := all[0]
+	if got.ID != "s1" || got.Name != "Morning" || !got.Enabled || len(got.Triggers) != 1 || got.Triggers[0].Offset != 10 || len(got.Actions) != 2 || len(got.Days) != 5 || len(got.Last) != 1 {
+		t.Fatalf("got scene mismatch: %+v", got)
+	}
+
+	// Update scene
+	got.Enabled = false
+	got.Name = "Morning Updated"
+	if err := st.Save(got); err != nil {
+		t.Fatalf("Save update: %v", err)
+	}
+	all, _ = st.All()
+	if len(all) != 1 || all[0].Name != "Morning Updated" || all[0].Enabled {
+		t.Fatalf("Save update mismatch: %+v", all[0])
+	}
+
+	// Delete
+	if err := st.Delete("s1"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	all, _ = st.All()
+	if len(all) != 0 {
+		t.Fatalf("All setelah delete: len=%d", len(all))
+	}
+}

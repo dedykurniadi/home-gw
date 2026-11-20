@@ -330,7 +330,8 @@ func main() {
 		if olog != nil {
 			sch.SetNote(func(id, scene string) { olog.NoteCmd(id, "Scene: "+scene) })
 		}
-		sch.SetStore(sdb.SchedLog()) // log eksekusi scene disimpan di DB (tahan restart)
+		sch.SetStore(sdb.SchedLog())      // log eksekusi scene disimpan di DB (tahan restart)
+		sch.SetSceneStore(sdb.Scenes())    // aturan scene disimpan di DB (tahan restart & auto-impor)
 	}
 	var schH http.Handler
 	if sch != nil {
