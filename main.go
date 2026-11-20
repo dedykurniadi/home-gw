@@ -377,6 +377,9 @@ func main() {
 			}
 			return olog.History(id, hours)
 		},
+		Sync: func(since int64, limit int) any {
+			return syncEvents(olog, plog, since, limit)
+		},
 		Configure: func(id string, r web.ConfigReq) error {
 			err := mgr.Configure(id, sonoff.ConfigReq{Startup: r.Startup, Pulse: r.Pulse, PulseWidth: r.PulseWidth, LED: r.LED})
 			switch {

@@ -2,6 +2,7 @@ package onoff
 
 import (
 	"log"
+	"sort"
 	"strings"
 )
 
@@ -106,4 +107,35 @@ func (l *Log) sourceOf(id string, evs []Event, i int) string {
 		return SrcDevice
 	}
 	return ""
+}
+
+// SyncEvent adalah satu kejadian ON/OFF/gap (sudah dibersihkan) untuk sinkronisasi ke klien.
+type SyncEvent struct {
+	ID    string `json:"id"`
+	T     int64  `json:"t"`
+	State string `json:"state"`
+	Src   string `json:"src,omitempty"`
+}
+
+// EventsSince mengembalikan semua kejadian semua perangkat dengan T >= since, urut waktu.
+func (l *Log) EventsSince(since int64) []SyncEvent {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now().Unix()
+	var out []SyncEvent
+	for id, raw := range l.ev {
+		evs := clean(raw, now)
+		for i, e := range evs {
+			if e.T >= since {
+				out = append(out, SyncEvent{id, e.T, e.State, l.sourceOf(id, evs, i)})
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].T != out[j].T {
+			return out[i].T < out[j].T
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
 }

@@ -833,3 +833,32 @@ func (r *Registry) FlushAll() {
 		}
 	}
 }
+
+// SyncEvent adalah kejadian status daya satu perangkat untuk sinkronisasi ke klien.
+type SyncEvent struct {
+	ID string `json:"id"`
+	Event
+}
+
+// EventsSince mengembalikan kejadian semua perangkat dengan T >= since (urut waktu).
+func (r *Registry) EventsSince(since int64) []SyncEvent {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []SyncEvent
+	for id, l := range r.loggers {
+		l.mu.Lock()
+		for _, e := range l.events {
+			if e.T >= since {
+				out = append(out, SyncEvent{id, e})
+			}
+		}
+		l.mu.Unlock()
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].T != out[j].T {
+			return out[i].T < out[j].T
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}

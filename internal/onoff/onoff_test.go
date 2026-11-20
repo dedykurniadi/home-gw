@@ -325,3 +325,20 @@ func TestSourceOfEvents(t *testing.T) {
 		t.Fatalf("setelah restart: %+v", h2.Events)
 	}
 }
+
+func TestEventsSinceCleanedAndSorted(t *testing.T) {
+	st := &memStore{ev: map[string][]Event{}}
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	cur := now.Add(-5 * time.Hour)
+	l, _ := OpenStore(st, func() time.Time { return cur })
+	l.Add("a", cur, On)
+	l.Add("b", cur.Add(time.Minute), Off)
+	l.Add("a", cur.Add(time.Hour), Gap)
+	l.Add("a", cur.Add(time.Hour+30*time.Second), On) // gap 30 dtk: dibuang
+	l.Add("a", cur.Add(2*time.Hour), Off)
+	cur = now
+	got := l.EventsSince(cur.Add(-5 * time.Hour).Add(time.Minute).Unix())
+	if len(got) != 2 || got[0].ID != "b" || got[1].ID != "a" || got[1].State != Off {
+		t.Fatalf("got %+v", got)
+	}
+}

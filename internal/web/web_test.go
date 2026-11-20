@@ -386,6 +386,24 @@ func TestEnergyEndpoint(t *testing.T) {
 	r2.Body.Close()
 }
 
+func TestSyncEndpoint(t *testing.T) {
+	var gotSince int64
+	var gotLimit int
+	h := New(Handlers{Sync: func(since int64, limit int) any {
+		gotSince, gotLimit = since, limit
+		return map[string]any{"ok": true}
+	}}, NewHub())
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	r, err := http.Get(srv.URL + "/api/sync/events?since=123&limit=9999")
+	if err != nil || r.StatusCode != 200 {
+		t.Fatalf("status %v %v", r, err)
+	}
+	if gotSince != 123 || gotLimit != 2000 {
+		t.Fatalf("since=%d limit=%d", gotSince, gotLimit)
+	}
+}
+
 func TestDeviceEndpoints(t *testing.T) {
 	var added sonoff.Device
 	var deleted string

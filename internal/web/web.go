@@ -73,6 +73,9 @@ type Handlers struct {
 	WifiHistory func() any
 	// DeleteWifiHistory (opsional): hapus entri riwayat WiFi berdasarkan MAC.
 	DeleteWifiHistory func(mac string) error
+	// Sync (opsional): kejadian ON/OFF dan daya sejak t (inklusif), maksimum limit kejadian per panggilan,
+	// dipakai klien (app Android) untuk menyimpan riwayat di DB lokal.
+	Sync func(since int64, limit int) any
 }
 
 type event struct {
@@ -347,6 +350,18 @@ func New(h Handlers, hub *Hub) http.Handler {
 			writeJSON(w, 200, h.EnergyMonthly(n))
 		})
 	}
+	mux.HandleFunc("/api/sync/events", func(w http.ResponseWriter, r *http.Request) {
+		if h.Sync == nil || r.Method != http.MethodGet {
+			writeJSON(w, 404, map[string]string{"error": "sinkronisasi nonaktif"})
+			return
+		}
+		since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
+		limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
+		if err != nil || limit < 1 || limit > 5000 {
+			limit = 2000
+		}
+		writeJSON(w, 200, h.Sync(since, limit))
+	})
 	mux.HandleFunc("/api/energy/cfg/", func(w http.ResponseWriter, r *http.Request) {
 		if h.SetEnergyCfg == nil {
 			writeJSON(w, 404, map[string]string{"error": "pengaturan energi nonaktif"})
