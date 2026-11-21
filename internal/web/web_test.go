@@ -485,6 +485,11 @@ func TestWifiHistoryAPI(t *testing.T) {
 			deletedMAC = mac
 			return nil
 		},
+		WifiAPs: func() any {
+			return []map[string]any{
+				{"iface": "wlan0", "band": "5G", "ssid": "HomeGW-5G", "freq": 5180, "channel": 36, "width": "80 MHz"},
+			}
+		},
 	}, hub))
 	defer srv.Close()
 
@@ -498,6 +503,21 @@ func TestWifiHistoryAPI(t *testing.T) {
 	resp.Body.Close()
 	if _, ok := state["wifi_history"]; !ok {
 		t.Fatalf("state harus memuat wifi_history: %+v", state)
+	}
+	if _, ok := state["wifi_aps"]; !ok {
+		t.Fatalf("state harus memuat wifi_aps: %+v", state)
+	}
+
+	// 2. GET /api/wifi/aps
+	resp, err = http.Get(srv.URL + "/api/wifi/aps")
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("GET /api/wifi/aps failed: %v", err)
+	}
+	var aps []map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&aps)
+	resp.Body.Close()
+	if len(aps) != 1 || aps[0]["ssid"] != "HomeGW-5G" {
+		t.Fatalf("GET /api/wifi/aps invalid: %+v", aps)
 	}
 
 	// 2. GET /api/wifi/history

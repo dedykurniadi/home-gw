@@ -2,6 +2,7 @@ package netdata
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"sort"
 	"strconv"
@@ -15,6 +16,16 @@ type arpEntry struct{ IP, MAC string }
 type wifiInfo struct {
 	Band   string
 	Signal int
+}
+
+// WifiAP memuat informasi Access Point nirkabel dari hostapd / iw.
+type WifiAP struct {
+	Iface   string `json:"iface"`
+	Band    string `json:"band"`
+	SSID    string `json:"ssid"`
+	Freq    int    `json:"freq"`
+	Channel int    `json:"channel"`
+	Width   string `json:"width"`
 }
 
 // parseLeases membaca /tmp/dhcp.leases: "expiry mac ip hostname clientid".
@@ -83,6 +94,57 @@ func band(f int) string {
 	default:
 		return "2.4G"
 	}
+}
+
+// freqToChannel menghitung nomor channel WiFi dari frekuensi MHz.
+func freqToChannel(f int) int {
+	switch {
+	case f == 2484:
+		return 14
+	case f >= 2412 && f <= 2472:
+		return (f - 2407) / 5
+	case f >= 5000 && f <= 5900:
+		return (f - 5000) / 5
+	case f >= 5925 && f <= 7125:
+		return (f - 5950) / 5
+	default:
+		return 0
+	}
+}
+
+// parseHostapdStatus membaca keluaran `ubus call hostapd.<iface> get_status`.
+func parseHostapdStatus(b []byte) (ssid string, freq, channel int, err error) {
+	var r struct {
+		Freq    int    `json:"freq"`
+		Channel int    `json:"channel"`
+		SSID    string `json:"ssid"`
+	}
+	if err := json.Unmarshal(b, &r); err != nil {
+		return "", 0, 0, err
+	}
+	return r.SSID, r.Freq, r.Channel, nil
+}
+
+// parseIwInfo membaca `iw dev <iface> info` untuk mengambil SSID, channel, freq, dan width.
+func parseIwInfo(s string) (ssid string, channel, freq int, width string) {
+	for _, ln := range strings.Split(s, "\n") {
+		ln = strings.TrimSpace(ln)
+		if strings.HasPrefix(ln, "ssid ") {
+			ssid = strings.TrimSpace(strings.TrimPrefix(ln, "ssid "))
+		} else if strings.HasPrefix(ln, "channel ") {
+			parts := strings.Split(ln, ",")
+			if len(parts) > 0 {
+				fmt.Sscanf(parts[0], "channel %d (%d MHz)", &channel, &freq)
+			}
+			for _, p := range parts[1:] {
+				p = strings.TrimSpace(p)
+				if strings.HasPrefix(p, "width:") {
+					width = strings.TrimSpace(strings.TrimPrefix(p, "width:"))
+				}
+			}
+		}
+	}
+	return ssid, channel, freq, width
 }
 
 // parseIw membaca `iw dev <if> station dump`, mengembalikan MAC -> detik terhubung.

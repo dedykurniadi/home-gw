@@ -255,6 +255,7 @@ func main() {
 	}
 	col.OnUpdate = func(c []netdata.Client) { hub.Publish("net", c) }
 	col.OnWifiHistory = func(h []netdata.WifiHistoryItem) { hub.Publish("wifi_history", h) }
+	col.OnWifiAPs = func(aps []netdata.WifiAP) { hub.Publish("wifi_aps", aps) }
 	mgr.OnChange = func(s []sonoff.State) { hub.Publish("iot", s) }
 
 	netFn := func() any { return col.Snapshot() }
@@ -462,6 +463,9 @@ func main() {
 		},
 		DeleteWifiHistory: func(mac string) error {
 			return col.DeleteWifiHistory(mac)
+		},
+		WifiAPs: func() any {
+			return col.WifiAPs()
 		},
 	}, hub)
 

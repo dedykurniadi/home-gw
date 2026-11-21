@@ -35,6 +35,18 @@ func TestParsers(t *testing.T) {
 	if iw["00:bd:3e:28:7a:ee"] != 91600 {
 		t.Fatalf("iw: %+v", iw)
 	}
+	ssid, f, ch, err := parseHostapdStatus([]byte(`{"status":"COMPLETED","freq":5180,"channel":36,"bssid":"aa:bb:cc:dd:ee:ff","ssid":"HomeGW-5G"}`))
+	if err != nil || ssid != "HomeGW-5G" || f != 5180 || ch != 36 {
+		t.Fatalf("parseHostapdStatus error: ssid=%s f=%d ch=%d err=%v", ssid, f, ch, err)
+	}
+	iwInfoSample := "Interface wlan0\n\tssid HomeGW-5G\n\ttype AP\n\tchannel 36 (5180 MHz), width: 80 MHz, center1: 5210 MHz\n"
+	iwSSID, iwCh, iwF, iwW := parseIwInfo(iwInfoSample)
+	if iwSSID != "HomeGW-5G" || iwCh != 36 || iwF != 5180 || iwW != "80 MHz" {
+		t.Fatalf("parseIwInfo: %s, %d, %d, %s", iwSSID, iwCh, iwF, iwW)
+	}
+	if freqToChannel(5180) != 36 || freqToChannel(2437) != 6 || freqToChannel(2412) != 1 {
+		t.Fatalf("freqToChannel gagal")
+	}
 	if h := subnetHosts("10.142.27.0/24"); len(h) != 254 || h[0] != "10.142.27.1" || h[253] != "10.142.27.254" {
 		t.Fatalf("subnet: %d", len(subnetHosts("10.142.27.0/24")))
 	}

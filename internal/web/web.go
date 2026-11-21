@@ -73,6 +73,8 @@ type Handlers struct {
 	WifiHistory func() any
 	// DeleteWifiHistory (opsional): hapus entri riwayat WiFi berdasarkan MAC.
 	DeleteWifiHistory func(mac string) error
+	// WifiAPs (opsional): info Access Point WiFi aktif.
+	WifiAPs func() any
 	// Sync (opsional): kejadian ON/OFF dan daya sejak t (inklusif), maksimum limit kejadian per panggilan,
 	// dipakai klien (app Android) untuk menyimpan riwayat di DB lokal.
 	Sync func(since int64, limit int) any
@@ -306,6 +308,9 @@ func New(h Handlers, hub *Hub) http.Handler {
 		if h.WifiHistory != nil {
 			out["wifi_history"] = h.WifiHistory()
 		}
+		if h.WifiAPs != nil {
+			out["wifi_aps"] = h.WifiAPs()
+		}
 		writeJSON(w, 200, out)
 	})
 
@@ -447,6 +452,9 @@ func New(h Handlers, hub *Hub) http.Handler {
 		if h.WifiHistory != nil {
 			initial["wifi_history"] = h.WifiHistory
 		}
+		if h.WifiAPs != nil {
+			initial["wifi_aps"] = h.WifiAPs
+		}
 		for name, get := range initial {
 			data, _ := json.Marshal(get())
 			wsData, _ := json.Marshal(map[string]any{
@@ -488,6 +496,9 @@ func New(h Handlers, hub *Hub) http.Handler {
 		}
 		if h.WifiHistory != nil {
 			initial["wifi_history"] = h.WifiHistory
+		}
+		if h.WifiAPs != nil {
+			initial["wifi_aps"] = h.WifiAPs
 		}
 		for name, get := range initial {
 			data, _ := json.Marshal(get())
@@ -703,6 +714,15 @@ func New(h Handlers, hub *Hub) http.Handler {
 				return
 			}
 			writeJSON(w, 200, map[string]string{"ok": "true"})
+		})
+	}
+	if h.WifiAPs != nil {
+		mux.HandleFunc("/api/wifi/aps", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				http.Error(w, "metode tidak didukung", http.StatusMethodNotAllowed)
+				return
+			}
+			writeJSON(w, 200, h.WifiAPs())
 		})
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

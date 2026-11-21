@@ -40,6 +40,16 @@ tr.off td{opacity:.5}
 .sec-row td{background:#13181f;color:var(--mut);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;padding:6px 10px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
 .sec-row:hover td{background:#13181f}
 .sec-row span{color:var(--txt);font-weight:normal;text-transform:none;letter-spacing:normal;margin-left:4px}
+.sec-radio-hdr td{background:#161d26;padding:8px 10px;border-top:2px solid #30363d;border-bottom:1px solid var(--line)}
+.sec-radio-hdr:hover td{background:#161d26}
+.radio-banner{display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:12px;color:var(--txt)}
+.radio-badge{font-weight:700;font-size:11px;padding:2px 8px;border-radius:4px;letter-spacing:.02em}
+.radio-badge.b-5g{background:rgba(88,166,255,.18);color:#58a6ff;border:1px solid rgba(88,166,255,.3)}
+.radio-badge.b-24g{background:rgba(210,153,34,.18);color:#d29922;border:1px solid rgba(210,153,34,.3)}
+.radio-title{font-size:12.5px;color:var(--txt)}
+.radio-title b{color:#fff}
+.radio-meta{color:var(--mut);background:#0d1117;padding:2px 7px;border-radius:4px;border:1px solid var(--line);font-size:11px}
+.radio-count{margin-left:auto;color:var(--mut);font-size:11px;font-weight:600}
 .btn-del{background:none;border:none;color:var(--mut);cursor:pointer;font-size:13px;padding:1px 6px;border-radius:4px;line-height:1}
 .btn-del:hover{color:var(--bad);background:rgba(248,81,73,.15)}
 .right{display:grid;grid-template-rows:1.25fr 1fr;gap:10px;min-height:0}
@@ -156,7 +166,7 @@ tr.off td{opacity:.5}
 const $=id=>document.getElementById(id);
 // Hostname berasal dari perangkat di jaringan, jadi semua teks dinamis wajib di-escape.
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-let clients=[],iot=[],power={},wifiHistory=[],filter="all",energy=null;
+let clients=[],iot=[],power={},wifiHistory=[],wifiAPs=[],filter="all",energy=null;
 
 const pad=n=>String(n).padStart(2,"0");
 function fmtDur(s){
@@ -217,20 +227,81 @@ window.delHist=async mac=>{
 
 function renderTable(){
   if(filter==="wifi"){
-    const active=clients.filter(isWifi);
-    let html=`<tr class="sec-row"><td colspan="9">Aktif <span>(${active.length})</span></td></tr>`;
-    if(!active.length){
-      html+=`<tr><td colspan="9" style="text-align:center;color:var(--mut);padding:14px">Tidak ada klien WiFi yang sedang aktif</td></tr>`;
+    const ap5 = wifiAPs.find(a => (a.band || "").includes("5")) || {};
+    const ap24 = wifiAPs.find(a => (a.band || "").includes("2.4")) || {};
+
+    const ssid5 = ap5.ssid || "HomeGW-5G";
+    const freq5 = ap5.freq ? (ap5.freq >= 1000 ? (ap5.freq/1000).toFixed(3) + " GHz" : ap5.freq + " MHz") : "5.180 GHz";
+    const chan5 = ap5.channel ? `Channel ${ap5.channel}` : "Channel 36";
+    const width5 = ap5.width ? `Ch Width ${ap5.width}` : "Ch Width 80MHz";
+
+    const ssid24 = ap24.ssid || "HomeGW-2.4G";
+    const freq24 = ap24.freq ? (ap24.freq >= 1000 ? (ap24.freq/1000).toFixed(3) + " GHz" : ap24.freq + " MHz") : "2.437 GHz";
+    const chan24 = ap24.channel ? `Channel ${ap24.channel}` : "Channel 6";
+    const width24 = ap24.width ? `Ch Width ${ap24.width}` : "Ch Width 20MHz";
+
+    const is5G = c => isWifi(c) && ((c.conn||"").includes("5G") || (c.conn||"").includes("5 GHz") || (c.conn||"").includes("5."));
+    const active5 = clients.filter(is5G);
+    const active24 = clients.filter(c => isWifi(c) && !active5.includes(c));
+
+    const hist5 = wifiHistory.filter(h => (h.band || "").includes("5"));
+    const hist24 = wifiHistory.filter(h => !hist5.includes(h));
+
+    let html = `
+      <tr class="sec-radio-hdr">
+        <td colspan="9">
+          <div class="radio-banner">
+            <span class="radio-badge b-5g">5 GHz</span>
+            <span class="radio-title">SSID: <b>${esc(ssid5)}</b></span>
+            <span class="radio-meta mono">${freq5}</span>
+            <span class="radio-meta">${chan5}</span>
+            <span class="radio-meta">${width5}</span>
+            <span class="radio-count">${active5.length} Aktif · ${hist5.length} Riwayat</span>
+          </div>
+        </td>
+      </tr>
+      <tr class="sec-row"><td colspan="9">Klien Terkoneksi (5 GHz) <span>(${active5.length})</span></td></tr>
+    `;
+    if(!active5.length){
+      html += `<tr><td colspan="9" style="text-align:center;color:var(--mut);padding:12px">Tidak ada klien 5 GHz yang sedang aktif</td></tr>`;
     } else {
-      html+=active.map(renderWifiRow).join("");
+      html += active5.map(renderWifiRow).join("");
     }
-    html+=`<tr class="sec-row"><td colspan="9">Riwayat / Terputus <span>(${wifiHistory.length})</span></td></tr>`;
-    if(!wifiHistory.length){
-      html+=`<tr><td colspan="9" style="text-align:center;color:var(--mut);padding:14px">Belum ada riwayat klien WiFi yang terputus</td></tr>`;
+    html += `<tr class="sec-row"><td colspan="9">Riwayat / Terputus (5 GHz) <span>(${hist5.length})</span></td></tr>`;
+    if(!hist5.length){
+      html += `<tr><td colspan="9" style="text-align:center;color:var(--mut);padding:12px">Belum ada riwayat klien 5 GHz</td></tr>`;
     } else {
-      html+=wifiHistory.map(renderHistRow).join("");
+      html += hist5.map(renderHistRow).join("");
     }
-    $("tb").innerHTML=html;
+
+    html += `
+      <tr class="sec-radio-hdr">
+        <td colspan="9">
+          <div class="radio-banner">
+            <span class="radio-badge b-24g">2.4 GHz</span>
+            <span class="radio-title">SSID: <b>${esc(ssid24)}</b></span>
+            <span class="radio-meta mono">${freq24}</span>
+            <span class="radio-meta">${chan24}</span>
+            <span class="radio-meta">${width24}</span>
+            <span class="radio-count">${active24.length} Aktif · ${hist24.length} Riwayat</span>
+          </div>
+        </td>
+      </tr>
+      <tr class="sec-row"><td colspan="9">Klien Terkoneksi (2.4 GHz) <span>(${active24.length})</span></td></tr>
+    `;
+    if(!active24.length){
+      html += `<tr><td colspan="9" style="text-align:center;color:var(--mut);padding:12px">Tidak ada klien 2.4 GHz yang sedang aktif</td></tr>`;
+    } else {
+      html += active24.map(renderWifiRow).join("");
+    }
+    html += `<tr class="sec-row"><td colspan="9">Riwayat / Terputus (2.4 GHz) <span>(${hist24.length})</span></td></tr>`;
+    if(!hist24.length){
+      html += `<tr><td colspan="9" style="text-align:center;color:var(--mut);padding:12px">Belum ada riwayat klien 2.4 GHz</td></tr>`;
+    } else {
+      html += hist24.map(renderHistRow).join("");
+    }
+
+    $("tb").innerHTML = html;
   } else {
     const rows=clients.filter(match);
     $("tb").innerHTML=rows.map(c=>{
@@ -302,6 +373,7 @@ function connectWS(){
       const msg=JSON.parse(e.data);
       if(msg.type==="net"){clients=msg.data||[];renderTable();}
       else if(msg.type==="wifi_history"){wifiHistory=msg.data||[];renderTable();}
+      else if(msg.type==="wifi_aps"){wifiAPs=msg.data||[];if(filter==="wifi")renderTable();}
       else if(msg.type==="iot"){iot=msg.data||[];renderIot();}
       else if(msg.type==="power"){const first=!Object.keys(power).length;power=msg.data||{};if(first)renderIot();updateChips();}
       else if(msg.type==="error"&&msg.data){
@@ -315,6 +387,7 @@ connectWS();
 fetch((window.API_BASE||"")+"/api/state").then(r=>r.json()).then(s=>{
   if(s.clients&&!clients.length){clients=s.clients;renderTable();}
   if(s.wifi_history&&!wifiHistory.length){wifiHistory=s.wifi_history;renderTable();}
+  if(s.wifi_aps){wifiAPs=s.wifi_aps;if(filter==="wifi")renderTable();}
   if(s.iot&&!iot.length){iot=s.iot;renderIot();}
   if(s.power&&!Object.keys(power).length){power=s.power;renderIot();updateChips();}
 }).catch(()=>{});

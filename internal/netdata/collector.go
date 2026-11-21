@@ -81,6 +81,8 @@ type Collector struct {
 	OnUpdate func([]Client)
 	// OnWifiHistory dipanggil saat riwayat klien WiFi berubah.
 	OnWifiHistory func([]WifiHistoryItem)
+	// OnWifiAPs dipanggil saat konfigurasi/status Access Point WiFi terbaca.
+	OnWifiAPs func([]WifiAP)
 
 	mu        sync.RWMutex
 	clients   []Client
@@ -95,6 +97,7 @@ type Collector struct {
 	wifi      map[string]wifiInfo
 	conn      map[string]int64
 	wifiHist  map[string]WifiHistoryItem
+	wifiAPs   []WifiAP
 }
 
 func New(cfg Config) *Collector {
@@ -212,7 +215,21 @@ func (c *Collector) Run(ctx context.Context) {
 
 // refreshWifi membaca ulang data WiFi: saat start, saat event konek/putus, atau tiap siklus bila wifi_events mati.
 func (c *Collector) refreshWifi() {
-	c.wifi, c.conn = c.readWifi()
+	wifi, conn, aps := c.readWifi()
+	c.mu.Lock()
+	c.wifi, c.conn = wifi, conn
+	c.wifiAPs = aps
+	c.mu.Unlock()
+	if c.OnWifiAPs != nil && len(aps) > 0 {
+		c.OnWifiAPs(aps)
+	}
+}
+
+// WifiAPs mengembalikan daftar snapshot AP WiFi yang aktif.
+func (c *Collector) WifiAPs() []WifiAP {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return append([]WifiAP(nil), c.wifiAPs...)
 }
 
 func sh(name string, args ...string) (string, error) {
@@ -222,9 +239,10 @@ func sh(name string, args ...string) (string, error) {
 	return string(out), err
 }
 
-func (c *Collector) readWifi() (map[string]wifiInfo, map[string]int64) {
+func (c *Collector) readWifi() (map[string]wifiInfo, map[string]int64, []WifiAP) {
 	wifi := map[string]wifiInfo{}
 	conn := map[string]int64{}
+	var aps []WifiAP
 	if c.ifaces == nil || time.Since(c.ifacesAt) > 60*time.Second {
 		c.ifacesAt = time.Now()
 		c.ifaces = []string{}
@@ -237,24 +255,79 @@ func (c *Collector) readWifi() (map[string]wifiInfo, map[string]int64) {
 		}
 	}
 	for _, name := range c.ifaces {
+		ifname := strings.TrimPrefix(name, "hostapd.")
+		ap := WifiAP{Iface: ifname}
+
+		// 1. Cek ubus call hostapd.<iface> get_status untuk SSID, Freq, dan Channel
+		if stOut, err := sh("ubus", "call", name, "get_status"); err == nil {
+			ssid, f, ch, _ := parseHostapdStatus([]byte(stOut))
+			ap.SSID = ssid
+			if f > 0 {
+				ap.Freq = f
+			}
+			if ch > 0 {
+				ap.Channel = ch
+			}
+		}
+
+		// 2. Cek iw dev <ifname> info untuk melengkapi / cross-check
+		if iwInfo, err := sh("iw", "dev", ifname, "info"); err == nil {
+			ssid, ch, f, w := parseIwInfo(iwInfo)
+			if ap.SSID == "" && ssid != "" {
+				ap.SSID = ssid
+			}
+			if ap.Channel == 0 && ch > 0 {
+				ap.Channel = ch
+			}
+			if ap.Freq == 0 && f > 0 {
+				ap.Freq = f
+			}
+			if w != "" {
+				ap.Width = w
+			}
+		}
+
+		// 3. Baca clients via get_clients
 		out, err := sh("ubus", "call", name, "get_clients")
-		if err != nil {
-			continue
+		if err == nil {
+			freq, sig, err := parseHostapd([]byte(out))
+			if err == nil {
+				if ap.Freq == 0 && freq > 0 {
+					ap.Freq = freq
+				}
+				for mac, s := range sig {
+					wifi[mac] = wifiInfo{band(freq), s}
+				}
+			}
 		}
-		freq, sig, err := parseHostapd([]byte(out))
-		if err != nil {
-			continue
+
+		if ap.Freq > 0 {
+			ap.Band = band(ap.Freq)
+			if ap.Channel == 0 {
+				ap.Channel = freqToChannel(ap.Freq)
+			}
 		}
-		for mac, s := range sig {
-			wifi[mac] = wifiInfo{band(freq), s}
+		if ap.Width == "" && ap.Band != "" {
+			switch ap.Band {
+			case "5G":
+				ap.Width = "80 MHz"
+			case "6G":
+				ap.Width = "160 MHz"
+			default:
+				ap.Width = "20 MHz"
+			}
 		}
-		if iw, err := sh("iw", "dev", strings.TrimPrefix(name, "hostapd."), "station", "dump"); err == nil {
+		if ap.Band != "" || ap.SSID != "" {
+			aps = append(aps, ap)
+		}
+
+		if iw, err := sh("iw", "dev", ifname, "station", "dump"); err == nil {
 			for mac, t := range parseIw(iw) {
 				conn[mac] = t
 			}
 		}
 	}
-	return wifi, conn
+	return wifi, conn, aps
 }
 
 // quickPublish menerbitkan snapshot daftar client segera (misal setelah event WiFi masuk/keluar)
