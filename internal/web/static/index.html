@@ -50,6 +50,7 @@ tr.off td{opacity:.5}
 .radio-title b{color:#fff}
 .radio-meta{color:var(--mut);background:#0d1117;padding:2px 7px;border-radius:4px;border:1px solid var(--line);font-size:11px}
 .radio-count{margin-left:auto;color:var(--mut);font-size:11px;font-weight:600}
+.tag-spd{background:rgba(56,139,253,.15);color:#58a6ff;border:1px solid rgba(56,139,253,.3);padding:1px 6px;border-radius:4px;font-size:11px;font-weight:600;white-space:nowrap}
 .btn-del{background:none;border:none;color:var(--mut);cursor:pointer;font-size:13px;padding:1px 6px;border-radius:4px;line-height:1}
 .btn-del:hover{color:var(--bad);background:rgba(248,81,73,.15)}
 .right{display:grid;grid-template-rows:1.25fr 1fr;gap:10px;min-height:0}
@@ -130,7 +131,7 @@ tr.off td{opacity:.5}
     </div>
     <div class="tw" id="tw">
       <table>
-        <thead><tr><th></th><th>Nama</th><th>IP</th><th>MAC</th><th>Koneksi</th><th>Sumber</th><th>Sinyal</th><th>Terhubung</th><th>Ping</th></tr></thead>
+        <thead><tr><th></th><th>Nama</th><th>IP</th><th>MAC</th><th>Koneksi</th><th>Speed</th><th>Sumber</th><th>Sinyal</th><th>Terhubung</th><th>Ping</th></tr></thead>
         <tbody id="tb"></tbody>
       </table>
     </div>
@@ -190,9 +191,11 @@ function match(c){return filter=="all"||(filter=="wifi"&&isWifi(c))||(filter=="d
 
 function renderWifiRow(c){
   const rtt=!c.up?'<span style="color:var(--bad)">down</span>':(c.rtt>=0?`<span style="color:${c.rtt>100?'var(--warn)':'var(--ok)'}">${c.rtt<10?c.rtt.toFixed(1):Math.round(c.rtt)} ms</span>`:'-');
+  const spd = c.bitrate ? `<span class="tag-spd" title="Tx: ${esc(c.tx_rate||c.bitrate)}, Rx: ${esc(c.rx_rate||'-')}">${esc(c.bitrate)}</span>` : '<span class="mono">—</span>';
   return `<tr class="${c.up?'':'off'}"><td><span class="dot ${c.up?'up':'down'}"></span></td>
     <td>${esc(c.name)||'<span class="mono">-</span>'}</td><td class="mono">${esc(c.ip)}</td><td class="mono">${esc(c.mac)||'-'}</td>
     <td><span class="tag t-wifi">${esc(c.conn)}</span></td>
+    <td class="mono">${spd}</td>
     <td><span class="tag ${c.src=='DHCP'?'t-dhcp':'t-static'}">${esc(c.src)}</span></td>
     <td>${sig(c)}</td><td class="mono">${fmtDur(c.connected)}</td><td>${rtt}</td></tr>`;
 }
@@ -202,6 +205,7 @@ function renderHistRow(h){
   return `<tr class="off"><td><span class="dot down" title="Terputus"></span></td>
     <td>${esc(h.name)||'<span class="mono">-</span>'}</td><td class="mono">${esc(h.ip)||'-'}</td><td class="mono">${esc(h.mac)||'-'}</td>
     <td><span class="tag t-wifi">${esc(h.band)||'WiFi'}</span></td>
+    <td class="mono">—</td>
     <td><span class="tag" style="border-color:var(--line);color:var(--mut)">Riwayat</span></td>
     <td><span class="mono">—</span></td>
     <td class="mono" title="Durasi sesi terakhir">${fmtDur(h.connected)}</td>
@@ -249,7 +253,7 @@ function renderTable(){
 
     let html = `
       <tr class="sec-radio-hdr">
-        <td colspan="9">
+        <td colspan="10">
           <div class="radio-banner">
             <span class="radio-badge b-5g">5 GHz</span>
             <span class="radio-title">SSID: <b>${esc(ssid5)}</b></span>
@@ -260,23 +264,23 @@ function renderTable(){
           </div>
         </td>
       </tr>
-      <tr class="sec-row"><td colspan="9">Klien Terkoneksi (5 GHz) <span>(${active5.length})</span></td></tr>
+      <tr class="sec-row"><td colspan="10">Klien Terkoneksi (5 GHz) <span>(${active5.length})</span></td></tr>
     `;
     if(!active5.length){
-      html += `<tr><td colspan="9" style="text-align:center;color:var(--mut);padding:12px">Tidak ada klien 5 GHz yang sedang aktif</td></tr>`;
+      html += `<tr><td colspan="10" style="text-align:center;color:var(--mut);padding:12px">Tidak ada klien 5 GHz yang sedang aktif</td></tr>`;
     } else {
       html += active5.map(renderWifiRow).join("");
     }
-    html += `<tr class="sec-row"><td colspan="9">Riwayat / Terputus (5 GHz) <span>(${hist5.length})</span></td></tr>`;
+    html += `<tr class="sec-row"><td colspan="10">Riwayat / Terputus (5 GHz) <span>(${hist5.length})</span></td></tr>`;
     if(!hist5.length){
-      html += `<tr><td colspan="9" style="text-align:center;color:var(--mut);padding:12px">Belum ada riwayat klien 5 GHz</td></tr>`;
+      html += `<tr><td colspan="10" style="text-align:center;color:var(--mut);padding:12px">Belum ada riwayat klien 5 GHz</td></tr>`;
     } else {
       html += hist5.map(renderHistRow).join("");
     }
 
     html += `
       <tr class="sec-radio-hdr">
-        <td colspan="9">
+        <td colspan="10">
           <div class="radio-banner">
             <span class="radio-badge b-24g">2.4 GHz</span>
             <span class="radio-title">SSID: <b>${esc(ssid24)}</b></span>
@@ -287,16 +291,16 @@ function renderTable(){
           </div>
         </td>
       </tr>
-      <tr class="sec-row"><td colspan="9">Klien Terkoneksi (2.4 GHz) <span>(${active24.length})</span></td></tr>
+      <tr class="sec-row"><td colspan="10">Klien Terkoneksi (2.4 GHz) <span>(${active24.length})</span></td></tr>
     `;
     if(!active24.length){
-      html += `<tr><td colspan="9" style="text-align:center;color:var(--mut);padding:12px">Tidak ada klien 2.4 GHz yang sedang aktif</td></tr>`;
+      html += `<tr><td colspan="10" style="text-align:center;color:var(--mut);padding:12px">Tidak ada klien 2.4 GHz yang sedang aktif</td></tr>`;
     } else {
       html += active24.map(renderWifiRow).join("");
     }
-    html += `<tr class="sec-row"><td colspan="9">Riwayat / Terputus (2.4 GHz) <span>(${hist24.length})</span></td></tr>`;
+    html += `<tr class="sec-row"><td colspan="10">Riwayat / Terputus (2.4 GHz) <span>(${hist24.length})</span></td></tr>`;
     if(!hist24.length){
-      html += `<tr><td colspan="9" style="text-align:center;color:var(--mut);padding:12px">Belum ada riwayat klien 2.4 GHz</td></tr>`;
+      html += `<tr><td colspan="10" style="text-align:center;color:var(--mut);padding:12px">Belum ada riwayat klien 2.4 GHz</td></tr>`;
     } else {
       html += hist24.map(renderHistRow).join("");
     }
@@ -306,9 +310,11 @@ function renderTable(){
     const rows=clients.filter(match);
     $("tb").innerHTML=rows.map(c=>{
       const rtt=!c.up?'<span style="color:var(--bad)">down</span>':(c.rtt>=0?`<span style="color:${c.rtt>100?'var(--warn)':'var(--ok)'}">${c.rtt<10?c.rtt.toFixed(1):Math.round(c.rtt)} ms</span>`:'-');
+      const spd = c.bitrate ? `<span class="tag-spd" title="Tx: ${esc(c.tx_rate||c.bitrate)}, Rx: ${esc(c.rx_rate||'-')}">${esc(c.bitrate)}</span>` : '<span class="mono">—</span>';
       return `<tr class="${c.up?'':'off'}"><td><span class="dot ${c.up?'up':'down'}"></span></td>
         <td>${esc(c.name)||'<span class="mono">-</span>'}</td><td class="mono">${esc(c.ip)}</td><td class="mono">${esc(c.mac)||'-'}</td>
         <td><span class="tag ${isWifi(c)?'t-wifi':'t-lan'}">${esc(c.conn)}</span></td>
+        <td class="mono">${spd}</td>
         <td><span class="tag ${c.src=='DHCP'?'t-dhcp':'t-static'}">${esc(c.src)}</span></td>
         <td>${sig(c)}</td><td class="mono">${fmtDur(c.connected)}</td><td>${rtt}</td></tr>`;
     }).join("");

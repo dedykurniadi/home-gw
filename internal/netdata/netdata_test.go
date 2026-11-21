@@ -27,8 +27,8 @@ func TestParsers(t *testing.T) {
 	if all := parseARP(arpSample, ""); len(all) != 4 {
 		t.Fatalf("arp semua: %+v", all)
 	}
-	freq, sig, err := parseHostapd([]byte(`{"freq":5765,"clients":{"12:73:5B:12:B3:36":{"signal":-75}}}`))
-	if err != nil || freq != 5765 || sig["12:73:5b:12:b3:36"] != -75 || band(freq) != "5G" || band(2437) != "2.4G" {
+	freq, sig, err := parseHostapd([]byte(`{"freq":5765,"clients":{"12:73:5B:12:B3:36":{"signal":-75,"rate":{"tx":866700,"rx":780000},"connected_time":120}}}`))
+	if err != nil || freq != 5765 || sig["12:73:5b:12:b3:36"].Signal != -75 || sig["12:73:5b:12:b3:36"].TxRate != 866700 || band(freq) != "5G" || band(2437) != "2.4G" {
 		t.Fatalf("hostapd: %v %v %v", freq, sig, err)
 	}
 	iw := parseIw("Station 00:bd:3e:28:7a:ee (on phy0-ap0)\n\tconnected time: 91600 seconds\n")
@@ -74,7 +74,7 @@ func TestBuildRows(t *testing.T) {
 	rows := buildRows(buildInput{
 		Leases: parseLeases("1 e0:98:06:c1:d4:c1 10.142.27.206 ESP_C1D4C1 *\n1 12:73:5b:12:b3:36 10.142.27.159 MacBookPro *\n1 aa:aa:aa:aa:aa:aa 10.142.27.170 stale *\n"),
 		ARP:    parseARP(arpSample+"10.142.27.206 0x1 0x2 e0:98:06:c1:d4:c1 * br-lan\n10.142.27.170 0x1 0x2 bb:bb:bb:bb:bb:bb * br-lan\n", "br-lan"),
-		Wifi:   map[string]wifiInfo{"e0:98:06:c1:d4:c1": {"2.4G", -64}},
+		Wifi:   map[string]wifiInfo{"e0:98:06:c1:d4:c1": {Band: "2.4G", Signal: -64, Bitrate: "144 Mbps"}},
 		Conn:   map[string]int64{"e0:98:06:c1:d4:c1": 5000},
 		Static: []StaticHost{{Name: "NVR", IP: "10.142.27.100"}, {Name: "Intel AMT", IP: "10.142.27.200"}},
 		Aliases: map[string]string{
@@ -227,7 +227,7 @@ func TestWiFiHostUpImmediatelyEvenBeforePing(t *testing.T) {
 func TestBuildRowsIncludesWiFiStationsWithKnownIP(t *testing.T) {
 	// Klien terhubung ke WiFi hostapd, tetapi belum tercatat di file leases atau ARP
 	rows := buildRows(buildInput{
-		Wifi:     map[string]wifiInfo{"11:22:33:44:55:66": {"5G", -48}},
+		Wifi:     map[string]wifiInfo{"11:22:33:44:55:66": {Band: "5G", Signal: -48}},
 		KnownIPs: map[string]string{"11:22:33:44:55:66": "10.142.27.88"},
 	})
 	if len(rows) != 1 {
@@ -241,7 +241,7 @@ func TestBuildRowsIncludesWiFiStationsWithKnownIP(t *testing.T) {
 func TestCollectorWifiHistory(t *testing.T) {
 	c := New(Config{NoPing: true})
 	// Simulasi 1 klien aktif di WiFi
-	c.wifi = map[string]wifiInfo{"aa:bb:cc:dd:ee:01": {"5G", -50}}
+	c.wifi = map[string]wifiInfo{"aa:bb:cc:dd:ee:01": {Band: "5G", Signal: -50}}
 	c.conn = map[string]int64{"aa:bb:cc:dd:ee:01": 300}
 	r := []Client{{
 		IP:        "10.0.0.50",

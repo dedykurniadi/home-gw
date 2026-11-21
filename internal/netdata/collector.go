@@ -62,6 +62,9 @@ type Client struct {
 	Up        bool    `json:"up"`
 	RTT       float64 `json:"rtt"` // median ms, -1 bila tidak ada
 	Fixed     bool    `json:"fixed"`
+	TxRate    string  `json:"tx_rate,omitempty"` // kecepatan PHY kirim (mis. "866 Mbps")
+	RxRate    string  `json:"rx_rate,omitempty"` // kecepatan PHY terima (mis. "780 Mbps")
+	Bitrate   string  `json:"bitrate,omitempty"` // ringkasan kecepatan tautan
 }
 
 const (
@@ -287,16 +290,32 @@ func (c *Collector) readWifi() (map[string]wifiInfo, map[string]int64, []WifiAP)
 			}
 		}
 
-		// 3. Baca clients via get_clients
+		// 3. Baca clients via get_clients dari ubus (sinyal, phy rate, durasi koneksi)
 		out, err := sh("ubus", "call", name, "get_clients")
 		if err == nil {
-			freq, sig, err := parseHostapd([]byte(out))
+			freq, stas, err := parseHostapd([]byte(out))
 			if err == nil {
 				if ap.Freq == 0 && freq > 0 {
 					ap.Freq = freq
 				}
-				for mac, s := range sig {
-					wifi[mac] = wifiInfo{band(freq), s}
+				for mac, s := range stas {
+					txStr := formatRate(s.TxRate)
+					rxStr := formatRate(s.RxRate)
+					bitrate := txStr
+					if bitrate == "" {
+						bitrate = rxStr
+					}
+					wifi[mac] = wifiInfo{
+						Band:      band(freq),
+						Signal:    s.Signal,
+						TxRate:    txStr,
+						RxRate:    rxStr,
+						Bitrate:   bitrate,
+						Connected: s.ConnectedTime,
+					}
+					if s.ConnectedTime > 0 {
+						conn[mac] = s.ConnectedTime
+					}
 				}
 			}
 		}

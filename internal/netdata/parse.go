@@ -14,8 +14,12 @@ type lease struct{ MAC, IP, Host string }
 type arpEntry struct{ IP, MAC string }
 
 type wifiInfo struct {
-	Band   string
-	Signal int
+	Band      string
+	Signal    int
+	TxRate    string
+	RxRate    string
+	Bitrate   string
+	Connected int64
 }
 
 // WifiAP memuat informasi Access Point nirkabel dari hostapd / iw.
@@ -67,20 +71,65 @@ func parseARP(s, iface string) []arpEntry {
 	return out
 }
 
+type hostapdStation struct {
+	Signal        int
+	TxRate        int
+	RxRate        int
+	ConnectedTime int64
+}
+
+// formatRate mengubah nilai rate (kbps / mbps) ke string terformat, mis. "866.7 Mbps" atau "54 Mbps".
+func formatRate(k int) string {
+	if k <= 0 {
+		return ""
+	}
+	if k > 10000 {
+		mbps := float64(k) / 1000.0
+		if mbps >= 100 {
+			return fmt.Sprintf("%.0f Mbps", mbps)
+		}
+		return fmt.Sprintf("%.1f Mbps", mbps)
+	}
+	if k >= 1000 {
+		return fmt.Sprintf("%.1f Mbps", float64(k)/10.0)
+	}
+	return fmt.Sprintf("%d Mbps", k)
+}
+
 // parseHostapd membaca keluaran `ubus call hostapd.<iface> get_clients`.
-func parseHostapd(b []byte) (int, map[string]int, error) {
+func parseHostapd(b []byte) (int, map[string]hostapdStation, error) {
 	var r struct {
 		Freq    int `json:"freq"`
 		Clients map[string]struct {
 			Signal int `json:"signal"`
+			Rate   struct {
+				Tx int `json:"tx"`
+				Rx int `json:"rx"`
+			} `json:"rate"`
+			TxRate        int   `json:"tx_rate"`
+			RxRate        int   `json:"rx_rate"`
+			ConnectedTime int64 `json:"connected_time"`
 		} `json:"clients"`
 	}
 	if err := json.Unmarshal(b, &r); err != nil {
 		return 0, nil, err
 	}
-	m := map[string]int{}
+	m := map[string]hostapdStation{}
 	for mac, c := range r.Clients {
-		m[strings.ToLower(mac)] = c.Signal
+		tx := c.TxRate
+		if tx == 0 {
+			tx = c.Rate.Tx
+		}
+		rx := c.RxRate
+		if rx == 0 {
+			rx = c.Rate.Rx
+		}
+		m[strings.ToLower(mac)] = hostapdStation{
+			Signal:        c.Signal,
+			TxRate:        tx,
+			RxRate:        rx,
+			ConnectedTime: c.ConnectedTime,
+		}
 	}
 	return r.Freq, m, nil
 }
@@ -270,8 +319,13 @@ func buildRows(in buildInput) []Client {
 			c.MAC = macLower
 			c.Conn = "WiFi " + w.Band
 			c.Signal, c.HasSignal = w.Signal, true
+			c.TxRate = w.TxRate
+			c.RxRate = w.RxRate
+			c.Bitrate = w.Bitrate
 			c.Src = "WiFi"
-			if t, ok := in.Conn[macLower]; ok {
+			if w.Connected > 0 {
+				c.Connected = w.Connected
+			} else if t, ok := in.Conn[macLower]; ok {
 				c.Connected = t
 			}
 			seenMAC[macLower] = true
@@ -284,7 +338,12 @@ func buildRows(in buildInput) []Client {
 			if w, ok := in.Wifi[c.MAC]; ok {
 				c.Conn = "WiFi " + w.Band
 				c.Signal, c.HasSignal = w.Signal, true
-				if t, ok := in.Conn[c.MAC]; ok {
+				c.TxRate = w.TxRate
+				c.RxRate = w.RxRate
+				c.Bitrate = w.Bitrate
+				if w.Connected > 0 {
+					c.Connected = w.Connected
+				} else if t, ok := in.Conn[c.MAC]; ok {
 					c.Connected = t
 				}
 			}
