@@ -78,22 +78,32 @@ type hostapdStation struct {
 	ConnectedTime int64
 }
 
-// formatRate mengubah nilai rate (kbps / mbps) ke string terformat, mis. "866.7 Mbps" atau "54 Mbps".
+// formatRate mengubah nilai rate (bps / 10bps / kbps) ke string terformat, mis. "866.7 Mbps" atau "780 Mbps".
 func formatRate(k int) string {
 	if k <= 0 {
 		return ""
 	}
-	if k > 10000 {
-		mbps := float64(k) / 1000.0
-		if mbps >= 100 {
-			return fmt.Sprintf("%.0f Mbps", mbps)
+	f := float64(k)
+	if f >= 1000000 {
+		// Nilai dalam satuan 10 bps dari ubus hostapd (mis. 78000000 -> 780 Mbps)
+		f = f / 100000.0
+	} else if f >= 10000 {
+		// Nilai dalam satuan kbps (mis. 866700 -> 866.7 Mbps)
+		f = f / 1000.0
+	}
+	for f > 10000 {
+		f = f / 100.0
+	}
+
+	if f >= 1000 {
+		return fmt.Sprintf("%.0f Mbps", f)
+	} else if f >= 1 {
+		if f == float64(int64(f)) {
+			return fmt.Sprintf("%.0f Mbps", f)
 		}
-		return fmt.Sprintf("%.1f Mbps", mbps)
+		return fmt.Sprintf("%.1f Mbps", f)
 	}
-	if k >= 1000 {
-		return fmt.Sprintf("%.1f Mbps", float64(k)/10.0)
-	}
-	return fmt.Sprintf("%d Mbps", k)
+	return ""
 }
 
 // parseHostapd membaca keluaran `ubus call hostapd.<iface> get_clients`.

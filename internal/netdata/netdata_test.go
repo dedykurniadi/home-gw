@@ -47,6 +47,9 @@ func TestParsers(t *testing.T) {
 	if freqToChannel(5180) != 36 || freqToChannel(2437) != 6 || freqToChannel(2412) != 1 {
 		t.Fatalf("freqToChannel gagal")
 	}
+	if formatRate(78000000) != "780 Mbps" || formatRate(86670000) != "866.7 Mbps" || formatRate(30000000) != "300 Mbps" {
+		t.Fatalf("formatRate gagal: 780M=%s 866.7M=%s", formatRate(78000000), formatRate(86670000))
+	}
 	if h := subnetHosts("10.142.27.0/24"); len(h) != 254 || h[0] != "10.142.27.1" || h[253] != "10.142.27.254" {
 		t.Fatalf("subnet: %d", len(subnetHosts("10.142.27.0/24")))
 	}
