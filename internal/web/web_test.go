@@ -2,6 +2,7 @@ package web
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -559,4 +560,98 @@ func TestWifiHistoryAPI(t *testing.T) {
 	}
 	delResp.Body.Close()
 }
+
+func TestWifiBlocksAndKickAPI(t *testing.T) {
+	var kickedMAC string
+	var kickedSec int64
+	var unbannedMAC string
+
+	h := Handlers{
+		IoT: func() any { return []any{} },
+		WifiBlocks: func() any {
+			return []map[string]any{
+				{
+					"mac":       "aa:bb:cc:dd:ee:ff",
+					"ip":        "192.168.1.50",
+					"name":      "Blocked-Phone",
+					"banned_at": 1700000000,
+					"ban_until": 1700003600,
+				},
+			}
+		},
+		KickWifiClient: func(mac string, banSeconds int64) error {
+			kickedMAC = mac
+			kickedSec = banSeconds
+			return nil
+		},
+		UnbanWifiClient: func(mac string) error {
+			unbannedMAC = mac
+			return nil
+		},
+	}
+	hub := NewHub()
+	srv := httptest.NewServer(New(h, hub))
+	defer srv.Close()
+
+	// 1. GET /api/wifi/blocks
+	resp, err := http.Get(srv.URL + "/api/wifi/blocks")
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("GET /api/wifi/blocks failed: %v", err)
+	}
+	var blocks []map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&blocks)
+	resp.Body.Close()
+	if len(blocks) != 1 || blocks[0]["mac"] != "aa:bb:cc:dd:ee:ff" {
+		t.Fatalf("GET /api/wifi/blocks invalid: %+v", blocks)
+	}
+
+	// 2. GET /api/state contains wifi_blocks
+	resp, err = http.Get(srv.URL + "/api/state")
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("GET /api/state failed: %v", err)
+	}
+	var state map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&state)
+	resp.Body.Close()
+	if _, ok := state["wifi_blocks"]; !ok {
+		t.Fatalf("GET /api/state missing wifi_blocks: %+v", state)
+	}
+
+	// 3. POST /api/wifi/kick without auth -> 403
+	postBody, _ := json.Marshal(map[string]any{"mac": "11:22:33:44:55:66", "ban_seconds": 3600})
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/wifi/kick", bytes.NewReader(postBody))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != 403 {
+		t.Fatalf("POST /api/wifi/kick without header should be 403, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// 4. POST /api/wifi/kick with X-HomeGW: 1 -> 200
+	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/api/wifi/kick", bytes.NewReader(postBody))
+	req.Header.Set("X-HomeGW", "1")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != 200 || kickedMAC != "11:22:33:44:55:66" || kickedSec != 3600 {
+		t.Fatalf("POST /api/wifi/kick failed: %v %d mac=%s sec=%d", err, resp.StatusCode, kickedMAC, kickedSec)
+	}
+	resp.Body.Close()
+
+	// 5. DELETE /api/wifi/blocks/{mac} without auth -> 403
+	req, _ = http.NewRequest(http.MethodDelete, srv.URL+"/api/wifi/blocks/11:22:33:44:55:66", nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != 403 {
+		t.Fatalf("DELETE /api/wifi/blocks without header should be 403, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// 6. DELETE /api/wifi/blocks/{mac} with X-HomeGW: 1 -> 200
+	req, _ = http.NewRequest(http.MethodDelete, srv.URL+"/api/wifi/blocks/11:22:33:44:55:66", nil)
+	req.Header.Set("X-HomeGW", "1")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != 200 || unbannedMAC != "11:22:33:44:55:66" {
+		t.Fatalf("DELETE /api/wifi/blocks failed: %v %d mac=%s", err, resp.StatusCode, unbannedMAC)
+	}
+	resp.Body.Close()
+}
+
 

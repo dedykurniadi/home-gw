@@ -4,6 +4,8 @@ package netdata
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -29,8 +31,9 @@ type Config struct {
 	Aliases       map[string]string // MAC -> nama
 	NoPing        bool              // semua dianggap hidup (mode uji / non-root)
 	WiredHosts    []string          // IP perangkat kabel: status up/down dari ARP (arping bila ada), bukan hanya ICMP
-	WifiEvents    bool              // berlangganan event hostapd (ubus subscribe) agar konek/putus WiFi seketika
-	WifiHistStore WifiHistStore     // penyimpanan persisten SQLite untuk riwayat klien WiFi
+	WifiEvents     bool               // berlangganan event hostapd (ubus subscribe) agar konek/putus WiFi seketika
+	WifiHistStore  WifiHistStore      // penyimpanan persisten SQLite untuk riwayat klien WiFi
+	WifiBlockStore WifiBlockStore     // penyimpanan persisten SQLite untuk daftar pemblokiran WiFi
 }
 
 // WifiHistoryItem mencatat riwayat perangkat yang pernah terhubung ke WiFi.
@@ -48,6 +51,22 @@ type WifiHistStore interface {
 	Upsert(item WifiHistoryItem) error
 	Delete(mac string) error
 	Prune(olderThan time.Duration) error
+}
+
+// WifiBlockItem mencatat status pemblokiran/ban perangkat WiFi.
+type WifiBlockItem struct {
+	MAC      string `json:"mac"`
+	IP       string `json:"ip"`
+	Name     string `json:"name"`
+	BannedAt int64  `json:"banned_at"` // unix timestamp saat diblokir
+	BanUntil int64  `json:"ban_until"` // unix timestamp berakhir, 0 = permanen
+}
+
+type WifiBlockStore interface {
+	All() ([]WifiBlockItem, error)
+	Upsert(item WifiBlockItem) error
+	Delete(mac string) error
+	Prune(now int64) error
 }
 
 type Client struct {
@@ -86,21 +105,24 @@ type Collector struct {
 	OnWifiHistory func([]WifiHistoryItem)
 	// OnWifiAPs dipanggil saat konfigurasi/status Access Point WiFi terbaca.
 	OnWifiAPs func([]WifiAP)
+	// OnWifiBlocks dipanggil saat daftar pemblokiran WiFi berubah.
+	OnWifiBlocks func([]WifiBlockItem)
 
-	mu        sync.RWMutex
-	clients   []Client
-	macIP     map[string]string
-	states    map[string]*hostState
-	ifaces    []string
-	ifacesAt  time.Time
-	lastSweep time.Time
-	kickCh    chan struct{}
-	arping    string // path program arping, kosong bila tidak ada
-	arpUp     map[string]bool
-	wifi      map[string]wifiInfo
-	conn      map[string]int64
-	wifiHist  map[string]WifiHistoryItem
-	wifiAPs   []WifiAP
+	mu         sync.RWMutex
+	clients    []Client
+	macIP      map[string]string
+	states     map[string]*hostState
+	ifaces     []string
+	ifacesAt   time.Time
+	lastSweep  time.Time
+	kickCh     chan struct{}
+	arping     string // path program arping, kosong bila tidak ada
+	arpUp      map[string]bool
+	wifi       map[string]wifiInfo
+	conn       map[string]int64
+	wifiHist   map[string]WifiHistoryItem
+	wifiBlocks map[string]WifiBlockItem
+	wifiAPs    []WifiAP
 }
 
 func New(cfg Config) *Collector {
@@ -117,16 +139,28 @@ func New(cfg Config) *Collector {
 		cfg.ARPFile = "/proc/net/arp"
 	}
 	c := &Collector{
-		cfg:      cfg,
-		states:   map[string]*hostState{},
-		macIP:    map[string]string{},
-		kickCh:   make(chan struct{}, 1),
-		wifiHist: map[string]WifiHistoryItem{},
+		cfg:        cfg,
+		states:     map[string]*hostState{},
+		macIP:      map[string]string{},
+		kickCh:     make(chan struct{}, 1),
+		wifiHist:   map[string]WifiHistoryItem{},
+		wifiBlocks: map[string]WifiBlockItem{},
 	}
 	if cfg.WifiHistStore != nil {
 		if items, err := cfg.WifiHistStore.All(); err == nil {
 			for _, it := range items {
 				c.wifiHist[strings.ToLower(it.MAC)] = it
+			}
+		}
+	}
+	if cfg.WifiBlockStore != nil {
+		now := time.Now().Unix()
+		_ = cfg.WifiBlockStore.Prune(now)
+		if items, err := cfg.WifiBlockStore.All(); err == nil {
+			for _, it := range items {
+				if it.BanUntil == 0 || it.BanUntil > now {
+					c.wifiBlocks[strings.ToLower(it.MAC)] = it
+				}
 			}
 		}
 	}
@@ -219,7 +253,31 @@ func (c *Collector) Run(ctx context.Context) {
 // refreshWifi membaca ulang data WiFi: saat start, saat event konek/putus, atau tiap siklus bila wifi_events mati.
 func (c *Collector) refreshWifi() {
 	wifi, conn, aps := c.readWifi()
+
+	// Enforce pemblokiran bila ada stasiun yang terblokir mencoba terhubung kembali
+	now := time.Now().Unix()
 	c.mu.Lock()
+	for mac := range wifi {
+		if blk, ok := c.wifiBlocks[mac]; ok {
+			if blk.BanUntil == 0 || blk.BanUntil > now {
+				var remainingMs int64 = 30 * 86400 * 1000
+				if blk.BanUntil > 0 {
+					remainingMs = (blk.BanUntil - now) * 1000
+				}
+				for _, name := range c.ifaces {
+					payload := fmt.Sprintf(`{"addr":"%s","deauth":true,"reason":1,"ban_time":%d}`, mac, remainingMs)
+					_, _ = sh("ubus", "call", name, "del_client", payload)
+				}
+				delete(wifi, mac)
+				delete(conn, mac)
+			} else {
+				delete(c.wifiBlocks, mac)
+				if c.cfg.WifiBlockStore != nil {
+					_ = c.cfg.WifiBlockStore.Delete(mac)
+				}
+			}
+		}
+	}
 	c.wifi, c.conn = wifi, conn
 	c.wifiAPs = aps
 	c.mu.Unlock()
@@ -555,6 +613,156 @@ func (c *Collector) DeleteWifiHistory(mac string) error {
 	}
 	if c.OnWifiHistory != nil {
 		c.OnWifiHistory(c.WifiHistory())
+	}
+	return nil
+}
+
+// WifiBlocks mengembalikan daftar klien WiFi yang sedang diblokir.
+func (c *Collector) WifiBlocks() []WifiBlockItem {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := time.Now().Unix()
+	var out []WifiBlockItem
+	for mac, it := range c.wifiBlocks {
+		if it.BanUntil > 0 && it.BanUntil <= now {
+			delete(c.wifiBlocks, mac)
+			if c.cfg.WifiBlockStore != nil {
+				_ = c.cfg.WifiBlockStore.Delete(mac)
+			}
+			continue
+		}
+		out = append(out, it)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].BannedAt > out[j].BannedAt })
+	return out
+}
+
+// KickWifiClient memutuskan atau memblokir klien WiFi via ubus hostapd.<iface> del_client.
+// banSeconds = 0: kick seketika (tanpa ban).
+// banSeconds > 0: blokir selama sekian detik.
+// banSeconds < 0: blokir permanen.
+func (c *Collector) KickWifiClient(mac string, banSeconds int64) error {
+	mac = strings.ToLower(strings.TrimSpace(mac))
+	if mac == "" {
+		return errors.New("mac address kosong")
+	}
+
+	c.mu.RLock()
+	var clientName, clientIP string
+	for _, cl := range c.clients {
+		if strings.ToLower(cl.MAC) == mac {
+			clientName = cl.Name
+			clientIP = cl.IP
+			break
+		}
+	}
+	if clientIP == "" {
+		clientIP = c.macIP[mac]
+	}
+	if clientName == "" && c.cfg.Aliases != nil {
+		clientName = c.cfg.Aliases[mac]
+	}
+	if clientName == "" {
+		if h, ok := c.wifiHist[mac]; ok {
+			clientName = h.Name
+			if clientIP == "" {
+				clientIP = h.IP
+			}
+		}
+	}
+	ifaces := append([]string(nil), c.ifaces...)
+	c.mu.RUnlock()
+
+	if len(ifaces) == 0 {
+		if list, err := sh("ubus", "list"); err == nil {
+			for _, name := range strings.Fields(list) {
+				if strings.HasPrefix(name, "hostapd.") {
+					ifaces = append(ifaces, name)
+				}
+			}
+		}
+	}
+
+	now := time.Now().Unix()
+	var banMs int64
+	var banUntil int64
+
+	if banSeconds > 0 {
+		banMs = banSeconds * 1000
+		banUntil = now + banSeconds
+	} else if banSeconds < 0 {
+		// Permanen: di hostapd 30 hari (2592000000 ms), di store ban_until = 0
+		banMs = 30 * 86400 * 1000
+		banUntil = 0
+	} else {
+		banMs = 0
+		banUntil = -1
+	}
+
+	payload := fmt.Sprintf(`{"addr":"%s","deauth":true,"reason":1,"ban_time":%d}`, mac, banMs)
+	for _, iface := range ifaces {
+		_, _ = sh("ubus", "call", iface, "del_client", payload)
+	}
+
+	if banUntil != -1 {
+		item := WifiBlockItem{
+			MAC:      mac,
+			IP:       clientIP,
+			Name:     clientName,
+			BannedAt: now,
+			BanUntil: banUntil,
+		}
+		c.mu.Lock()
+		c.wifiBlocks[mac] = item
+		c.mu.Unlock()
+		if c.cfg.WifiBlockStore != nil {
+			_ = c.cfg.WifiBlockStore.Upsert(item)
+		}
+		if c.OnWifiBlocks != nil {
+			c.OnWifiBlocks(c.WifiBlocks())
+		}
+	}
+
+	c.kick()
+	return nil
+}
+
+// UnbanWifiClient membuka pemblokiran klien WiFi via ubus hostapd.<iface> del_client dan menghapus dari database.
+func (c *Collector) UnbanWifiClient(mac string) error {
+	mac = strings.ToLower(strings.TrimSpace(mac))
+	if mac == "" {
+		return errors.New("mac address kosong")
+	}
+
+	c.mu.RLock()
+	ifaces := append([]string(nil), c.ifaces...)
+	c.mu.RUnlock()
+
+	if len(ifaces) == 0 {
+		if list, err := sh("ubus", "list"); err == nil {
+			for _, name := range strings.Fields(list) {
+				if strings.HasPrefix(name, "hostapd.") {
+					ifaces = append(ifaces, name)
+				}
+			}
+		}
+	}
+
+	// Reset ban timer di hostapd
+	payload := fmt.Sprintf(`{"addr":"%s","deauth":false,"reason":1,"ban_time":0}`, mac)
+	for _, iface := range ifaces {
+		_, _ = sh("ubus", "call", iface, "del_client", payload)
+	}
+
+	c.mu.Lock()
+	delete(c.wifiBlocks, mac)
+	c.mu.Unlock()
+
+	if c.cfg.WifiBlockStore != nil {
+		_ = c.cfg.WifiBlockStore.Delete(mac)
+	}
+	if c.OnWifiBlocks != nil {
+		c.OnWifiBlocks(c.WifiBlocks())
 	}
 	return nil
 }

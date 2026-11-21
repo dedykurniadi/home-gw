@@ -196,6 +196,7 @@ func main() {
 		Aliases:       aliases,
 		NoPing:        cfg.NoPing,
 		WifiHistStore: sdb.WifiHist(),
+		WifiBlockStore: sdb.WifiBlocks(),
 	})
 	mgr := sonoff.NewManager(devs, col.IPByMAC)
 	mgr.ResolveMAC = col.MACByIP
@@ -256,6 +257,7 @@ func main() {
 	col.OnUpdate = func(c []netdata.Client) { hub.Publish("net", c) }
 	col.OnWifiHistory = func(h []netdata.WifiHistoryItem) { hub.Publish("wifi_history", h) }
 	col.OnWifiAPs = func(aps []netdata.WifiAP) { hub.Publish("wifi_aps", aps) }
+	col.OnWifiBlocks = func(b []netdata.WifiBlockItem) { hub.Publish("wifi_blocks", b) }
 	mgr.OnChange = func(s []sonoff.State) { hub.Publish("iot", s) }
 
 	netFn := func() any { return col.Snapshot() }
@@ -466,6 +468,15 @@ func main() {
 		},
 		WifiAPs: func() any {
 			return col.WifiAPs()
+		},
+		WifiBlocks: func() any {
+			return col.WifiBlocks()
+		},
+		KickWifiClient: func(mac string, banSeconds int64) error {
+			return col.KickWifiClient(mac, banSeconds)
+		},
+		UnbanWifiClient: func(mac string) error {
+			return col.UnbanWifiClient(mac)
 		},
 	}, hub)
 

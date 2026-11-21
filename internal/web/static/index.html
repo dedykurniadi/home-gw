@@ -103,6 +103,16 @@ tr.off td{opacity:.5}
 #mEvents{list-style:none;padding:0;font-size:12px;max-height:150px;overflow:auto}
 #mEvents li{padding:2px 0;border-top:1px solid var(--line)}#mEvents li:first-child{border-top:0}
 #mNote{font-size:12px;color:var(--mut)}
+.kick-opt{display:flex;align-items:flex-start;gap:10px;padding:9px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer;transition:.15s}
+.kick-opt:hover{background:rgba(255,255,255,.04);border-color:var(--mut)}
+.kick-opt input{margin-top:3px;accent-color:var(--bad)}
+.kick-opt div{display:flex;flex-direction:column;gap:2px}
+.kick-opt b{font-size:13px}
+.kick-opt small{color:var(--mut);font-size:11px}
+.btn-kick{background:transparent;border:1px solid rgba(248,81,73,.4);color:var(--bad);padding:2px 7px;border-radius:4px;font-size:11px;cursor:pointer;transition:.15s;white-space:nowrap}
+.btn-kick:hover{background:rgba(248,81,73,.15);border-color:var(--bad)}
+.btn-unblock{background:transparent;border:1px solid rgba(88,166,255,.4);color:var(--acc);padding:2px 8px;border-radius:4px;font-size:11px;cursor:pointer;transition:.15s;white-space:nowrap}
+.btn-unblock:hover{background:rgba(88,166,255,.15);border-color:var(--acc)}
 @media(max-width:700px){.tiles{grid-template-columns:repeat(2,minmax(0,1fr))}.mcols{grid-template-columns:1fr}}
 @media(max-width:900px){html,body{height:auto;overflow:auto}main{grid-template-columns:1fr}.right{grid-template-rows:auto auto}.view{aspect-ratio:16/9}.tw{max-height:50vh}}
 </style>
@@ -167,7 +177,7 @@ tr.off td{opacity:.5}
 const $=id=>document.getElementById(id);
 // Hostname berasal dari perangkat di jaringan, jadi semua teks dinamis wajib di-escape.
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-let clients=[],iot=[],power={},wifiHistory=[],wifiAPs=[],filter="all",energy=null;
+let clients=[],iot=[],power={},wifiHistory=[],wifiAPs=[],wifiBlocks=[],filter="all",energy=null;
 
 const pad=n=>String(n).padStart(2,"0");
 function fmtDur(s){
@@ -197,7 +207,8 @@ function renderWifiRow(c){
     <td><span class="tag t-wifi">${esc(c.conn)}</span></td>
     <td class="mono">${spd}</td>
     <td><span class="tag ${c.src=='DHCP'?'t-dhcp':'t-static'}">${esc(c.src)}</span></td>
-    <td>${sig(c)}</td><td class="mono">${fmtDur(c.connected)}</td><td>${rtt}</td></tr>`;
+    <td>${sig(c)}</td><td class="mono">${fmtDur(c.connected)}</td>
+    <td><div style="display:flex;align-items:center;justify-content:space-between;gap:6px"><span>${rtt}</span><button class="btn-kick" onclick="openKickModal('${esc(c.mac)}','${esc(c.name||c.ip||c.mac)}')" title="Kick atau Blokir klien WiFi">⚡ Kick</button></div></td></tr>`;
 }
 
 function renderHistRow(h){
@@ -209,14 +220,37 @@ function renderHistRow(h){
     <td><span class="tag" style="border-color:var(--line);color:var(--mut)">Riwayat</span></td>
     <td><span class="mono">—</span></td>
     <td class="mono" title="Durasi sesi terakhir">${fmtDur(h.connected)}</td>
-    <td><div style="display:flex;align-items:center;justify-content:space-between"><span title="Terakhir terhubung: ${new Date(h.last_seen*1000).toLocaleString('id-ID')}">${fmtAge(age)} lalu</span><button class="btn-del" onclick="delHist('${esc(h.mac)}')" title="Hapus dari riwayat">✕</button></div></td></tr>`;
+    <td><div style="display:flex;align-items:center;justify-content:space-between;gap:6px"><span title="Terakhir terhubung: ${new Date(h.last_seen*1000).toLocaleString('id-ID')}">${fmtAge(age)} lalu</span><div style="display:flex;align-items:center;gap:4px"><button class="btn-kick" onclick="openKickModal('${esc(h.mac)}','${esc(h.name||h.ip||h.mac)}')" title="Blokir klien WiFi ini">Blokir</button><button class="btn-del" onclick="delHist('${esc(h.mac)}')" title="Hapus dari riwayat">✕</button></div></div></td></tr>`;
+}
+
+function renderBlockRow(b){
+  const now = Date.now()/1000;
+  let sisa = "Permanen";
+  if (b.ban_until > 0) {
+    const diff = b.ban_until - now;
+    if (diff <= 0) sisa = "Kedaluwarsa";
+    else sisa = fmtAge(diff);
+  }
+  const tgl = b.banned_at ? new Date(b.banned_at * 1000).toLocaleString('id-ID') : '-';
+  return `<tr class="off" style="background:rgba(248,81,73,.03)">
+    <td><span class="dot down" style="background:var(--bad)" title="Diblokir"></span></td>
+    <td>${esc(b.name)||'<span class="mono">-</span>'}</td>
+    <td class="mono">${esc(b.ip)||'-'}</td>
+    <td class="mono">${esc(b.mac)||'-'}</td>
+    <td><span class="tag" style="border-color:rgba(248,81,73,.4);color:var(--bad)">Diblokir</span></td>
+    <td class="mono">—</td>
+    <td><span class="tag" style="border-color:var(--line);color:var(--mut)">WiFi</span></td>
+    <td><span class="mono">—</span></td>
+    <td class="mono" title="Waktu blokir: ${tgl}">${sisa}</td>
+    <td><div style="display:flex;align-items:center;justify-content:flex-end"><button class="btn-unblock" onclick="unbanClient('${esc(b.mac)}')" title="Buka blokir WiFi untuk perangkat ini">Batal Blokir</button></div></td>
+  </tr>`;
 }
 
 window.delHist=async mac=>{
   if(!mac)return;
   try{
     if(ws&&ws.readyState===WebSocket.OPEN){
-      ws.send(JSON.stringify({action:"delete_wifi_history",mac}));
+      ws.send(JSON.stringify({action:"delete_wifi_history",id:mac}));
     } else {
       const res=await fetch((window.API_BASE||"")+"/api/wifi/history/"+encodeURIComponent(mac),{method:"DELETE",headers:{"X-HomeGW":"1"}});
       if(!res.ok)throw new Error("HTTP "+res.status);
@@ -226,6 +260,117 @@ window.delHist=async mac=>{
     toast("Riwayat dihapus");
   }catch(e){
     toast("Gagal menghapus: "+(e.message||e));
+  }
+};
+
+window.openKickModal = (mac, name) => {
+  const dlg = $("dlg");
+  dlg.innerHTML = `
+    <div class="dbox" role="dialog" aria-modal="true" style="max-width:440px">
+      <div class="shead">
+        <div class="ttl">
+          <div class="t1">Kick / Blokir WiFi</div>
+          <div class="t2" style="font-family:monospace;font-size:12px;margin-top:2px">${esc(name)} (${esc(mac)})</div>
+        </div>
+        <button class="bk" onclick="closeDlg()" title="Tutup">✕</button>
+      </div>
+      <div style="padding:16px;display:flex;flex-direction:column;gap:12px">
+        <div style="font-size:13px;color:var(--mut)">Pilih tindakan untuk perangkat ini:</div>
+        <div style="display:flex;flex-direction:column;gap:8px" id="kickOptGroup">
+          <label class="kick-opt">
+            <input type="radio" name="banTime" value="0" checked>
+            <div>
+              <b style="color:var(--warn)">⚡ Kick Saja (0 detik)</b>
+              <small>Putuskan koneksi saat ini. Perangkat bisa langsung menghubungkan ulang.</small>
+            </div>
+          </label>
+          <label class="kick-opt">
+            <input type="radio" name="banTime" value="3600">
+            <div>
+              <b>Blokir 1 Jam</b>
+              <small>Deauth dan tolak koneksi selama 1 jam.</small>
+            </div>
+          </label>
+          <label class="kick-opt">
+            <input type="radio" name="banTime" value="43200">
+            <div>
+              <b>Blokir 12 Jam</b>
+              <small>Deauth dan tolak koneksi selama 12 jam.</small>
+            </div>
+          </label>
+          <label class="kick-opt">
+            <input type="radio" name="banTime" value="86400">
+            <div>
+              <b>Blokir 1 Hari (24 Jam)</b>
+              <small>Deauth dan tolak koneksi selama 1 hari.</small>
+            </div>
+          </label>
+          <label class="kick-opt">
+            <input type="radio" name="banTime" value="604800">
+            <div>
+              <b>Blokir 7 Hari (1 Minggu)</b>
+              <small>Deauth dan tolak koneksi selama 7 hari.</small>
+            </div>
+          </label>
+          <label class="kick-opt">
+            <input type="radio" name="banTime" value="-1">
+            <div>
+              <b style="color:var(--bad)">🚫 Blokir Permanen</b>
+              <small>Tolak koneksi tanpa batas waktu sampai dibuka manual.</small>
+            </div>
+          </label>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:6px">
+          <button class="ch" onclick="closeDlg()">Batal</button>
+          <button class="ch" style="background:var(--bad);color:#fff;border-color:transparent" id="btnConfirmKick">Terapkan</button>
+        </div>
+      </div>
+    </div>
+  `;
+  $("btnConfirmKick").onclick = () => {
+    const sel = dlg.querySelector('input[name="banTime"]:checked');
+    const sec = sel ? parseInt(sel.value, 10) : 0;
+    kickClient(mac, sec);
+  };
+  dlg.classList.add("open");
+};
+
+window.kickClient = async (mac, banSeconds) => {
+  try {
+    if(ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({action: "kick_wifi", id: mac, ban_seconds: banSeconds}));
+    } else {
+      const res = await fetch((window.API_BASE||"")+"/api/wifi/kick", {
+        method: "POST",
+        headers: {"Content-Type": "application/json", "X-HomeGW": "1"},
+        body: JSON.stringify({mac: mac, ban_seconds: banSeconds})
+      });
+      if(!res.ok) throw new Error("HTTP " + res.status);
+    }
+    closeDlg();
+    toast(banSeconds === 0 ? "Klien diputuskan (kick)" : "Klien berhasil diblokir");
+  } catch(e) {
+    toast("Gagal: " + (e.message || e));
+  }
+};
+
+window.unbanClient = async (mac) => {
+  if(!mac) return;
+  try {
+    if(ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({action: "unban_wifi", id: mac}));
+    } else {
+      const res = await fetch((window.API_BASE||"")+"/api/wifi/blocks/"+encodeURIComponent(mac), {
+        method: "DELETE",
+        headers: {"X-HomeGW": "1"}
+      });
+      if(!res.ok) throw new Error("HTTP " + res.status);
+    }
+    wifiBlocks = wifiBlocks.filter(b => b.mac.toLowerCase() !== mac.toLowerCase());
+    renderTable();
+    toast("Blokir dibuka");
+  } catch(e) {
+    toast("Gagal membuka blokir: " + (e.message || e));
   }
 };
 
@@ -305,6 +450,15 @@ function renderTable(){
       html += hist24.map(renderHistRow).join("");
     }
 
+    html += `
+      <tr class="sec-row" style="background:rgba(248,81,73,.08)"><td colspan="10" style="color:var(--bad)">Perangkat Terblokir <span>(${wifiBlocks.length})</span></td></tr>
+    `;
+    if(!wifiBlocks.length){
+      html += `<tr><td colspan="10" style="text-align:center;color:var(--mut);padding:12px">Tidak ada perangkat yang sedang diblokir</td></tr>`;
+    } else {
+      html += wifiBlocks.map(renderBlockRow).join("");
+    }
+
     $("tb").innerHTML = html;
   } else {
     const rows=clients.filter(match);
@@ -379,6 +533,7 @@ function connectWS(){
       const msg=JSON.parse(e.data);
       if(msg.type==="net"){clients=msg.data||[];renderTable();}
       else if(msg.type==="wifi_history"){wifiHistory=msg.data||[];renderTable();}
+      else if(msg.type==="wifi_blocks"){wifiBlocks=msg.data||[];renderTable();}
       else if(msg.type==="wifi_aps"){wifiAPs=msg.data||[];if(filter==="wifi")renderTable();}
       else if(msg.type==="iot"){iot=msg.data||[];renderIot();}
       else if(msg.type==="power"){const first=!Object.keys(power).length;power=msg.data||{};if(first)renderIot();updateChips();}
@@ -393,6 +548,7 @@ connectWS();
 fetch((window.API_BASE||"")+"/api/state").then(r=>r.json()).then(s=>{
   if(s.clients&&!clients.length){clients=s.clients;renderTable();}
   if(s.wifi_history&&!wifiHistory.length){wifiHistory=s.wifi_history;renderTable();}
+  if(s.wifi_blocks&&!wifiBlocks.length){wifiBlocks=s.wifi_blocks;renderTable();}
   if(s.wifi_aps){wifiAPs=s.wifi_aps;if(filter==="wifi")renderTable();}
   if(s.iot&&!iot.length){iot=s.iot;renderIot();}
   if(s.power&&!Object.keys(power).length){power=s.power;renderIot();updateChips();}

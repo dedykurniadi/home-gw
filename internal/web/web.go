@@ -75,6 +75,12 @@ type Handlers struct {
 	DeleteWifiHistory func(mac string) error
 	// WifiAPs (opsional): info Access Point WiFi aktif.
 	WifiAPs func() any
+	// WifiBlocks (opsional): daftar klien WiFi yang sedang diblokir.
+	WifiBlocks func() any
+	// KickWifiClient (opsional): kick atau blokir klien WiFi berdasarkan MAC.
+	KickWifiClient func(mac string, banSeconds int64) error
+	// UnbanWifiClient (opsional): buka blokir klien WiFi berdasarkan MAC.
+	UnbanWifiClient func(mac string) error
 	// Sync (opsional): kejadian ON/OFF dan daya sejak t (inklusif), maksimum limit kejadian per panggilan,
 	// dipakai klien (app Android) untuk menyimpan riwayat di DB lokal.
 	Sync func(since int64, limit int) any
@@ -167,12 +173,18 @@ func (c *wsClient) readPump(h Handlers) {
 			break
 		}
 		var req struct {
-			Action string `json:"action"`
-			ID     string `json:"id"`
-			Cmd    string `json:"cmd"`
+			Action     string `json:"action"`
+			ID         string `json:"id"`
+			Cmd        string `json:"cmd"`
+			MAC        string `json:"mac"`
+			BanSeconds *int64 `json:"ban_seconds"`
 		}
 		if err := json.Unmarshal(msg, &req); err != nil {
 			continue
+		}
+		targetMAC := req.ID
+		if targetMAC == "" {
+			targetMAC = req.MAC
 		}
 		switch req.Action {
 		case "control", "toggle":
@@ -197,8 +209,22 @@ func (c *wsClient) readPump(h Handlers) {
 				h.Discover()
 			}
 		case "delete_wifi_history":
-			if h.DeleteWifiHistory != nil && req.ID != "" {
-				_ = h.DeleteWifiHistory(req.ID)
+			if h.DeleteWifiHistory != nil && targetMAC != "" {
+				_ = h.DeleteWifiHistory(targetMAC)
+			}
+		case "kick_wifi":
+			if h.KickWifiClient != nil && targetMAC != "" {
+				var sec int64
+				if req.BanSeconds != nil {
+					sec = *req.BanSeconds
+				} else if req.Cmd != "" {
+					sec, _ = strconv.ParseInt(req.Cmd, 10, 64)
+				}
+				_ = h.KickWifiClient(targetMAC, sec)
+			}
+		case "unban_wifi":
+			if h.UnbanWifiClient != nil && targetMAC != "" {
+				_ = h.UnbanWifiClient(targetMAC)
 			}
 		}
 	}
@@ -310,6 +336,9 @@ func New(h Handlers, hub *Hub) http.Handler {
 		}
 		if h.WifiAPs != nil {
 			out["wifi_aps"] = h.WifiAPs()
+		}
+		if h.WifiBlocks != nil {
+			out["wifi_blocks"] = h.WifiBlocks()
 		}
 		writeJSON(w, 200, out)
 	})
@@ -455,6 +484,9 @@ func New(h Handlers, hub *Hub) http.Handler {
 		if h.WifiAPs != nil {
 			initial["wifi_aps"] = h.WifiAPs
 		}
+		if h.WifiBlocks != nil {
+			initial["wifi_blocks"] = h.WifiBlocks
+		}
 		for name, get := range initial {
 			data, _ := json.Marshal(get())
 			wsData, _ := json.Marshal(map[string]any{
@@ -499,6 +531,9 @@ func New(h Handlers, hub *Hub) http.Handler {
 		}
 		if h.WifiAPs != nil {
 			initial["wifi_aps"] = h.WifiAPs
+		}
+		if h.WifiBlocks != nil {
+			initial["wifi_blocks"] = h.WifiBlocks
 		}
 		for name, get := range initial {
 			data, _ := json.Marshal(get())
@@ -723,6 +758,66 @@ func New(h Handlers, hub *Hub) http.Handler {
 				return
 			}
 			writeJSON(w, 200, h.WifiAPs())
+		})
+	}
+	if h.WifiBlocks != nil {
+		mux.HandleFunc("/api/wifi/blocks", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				w.Header().Set("Allow", "GET")
+				writeJSON(w, 405, map[string]string{"error": "gunakan GET"})
+				return
+			}
+			w.Header().Set("Cache-Control", "no-store")
+			writeJSON(w, 200, h.WifiBlocks())
+		})
+	}
+	if h.UnbanWifiClient != nil {
+		mux.HandleFunc("/api/wifi/blocks/", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodDelete {
+				w.Header().Set("Allow", "DELETE")
+				writeJSON(w, 405, map[string]string{"error": "gunakan DELETE"})
+				return
+			}
+			if !hasAuthHeader(r) {
+				writeJSON(w, 403, map[string]string{"error": "DELETE dengan header X-HomeGW diperlukan"})
+				return
+			}
+			mac := strings.TrimPrefix(r.URL.Path, "/api/wifi/blocks/")
+			if mac == "" {
+				writeJSON(w, 400, map[string]string{"error": "MAC tidak valid"})
+				return
+			}
+			if err := h.UnbanWifiClient(mac); err != nil {
+				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, 200, map[string]string{"ok": "true"})
+		})
+	}
+	if h.KickWifiClient != nil {
+		mux.HandleFunc("/api/wifi/kick", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				w.Header().Set("Allow", "POST")
+				writeJSON(w, 405, map[string]string{"error": "gunakan POST"})
+				return
+			}
+			if !hasAuthHeader(r) {
+				writeJSON(w, 403, map[string]string{"error": "POST dengan header X-HomeGW diperlukan"})
+				return
+			}
+			var body struct {
+				MAC        string `json:"mac"`
+				BanSeconds int64  `json:"ban_seconds"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.MAC == "" {
+				writeJSON(w, 400, map[string]string{"error": "payload harus berupa JSON dengan field 'mac'"})
+				return
+			}
+			if err := h.KickWifiClient(body.MAC, body.BanSeconds); err != nil {
+				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, 200, map[string]string{"ok": "true"})
 		})
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

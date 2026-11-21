@@ -15,3 +15,6 @@ local.properties
 .idea/
 *.apk
 *.aab
+.DS_Store
+frontend/
+sync-frontend.sh
